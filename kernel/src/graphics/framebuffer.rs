@@ -1,11 +1,13 @@
-//! Framebuffer wrapper for Limine
+//! Framebuffer wrapper for Limine with double buffering
 
 use crate::boot::FRAMEBUFFER_REQUEST;
+use alloc::vec::Vec;
 use spin::Mutex;
 
-/// Framebuffer information
+/// Framebuffer information with double buffering support
 pub struct Framebuffer {
-    pub address: *mut u32,
+    pub address: *mut u32,      // Front buffer (display)
+    pub back_buffer: Vec<u32>,  // Back buffer (render target)
     pub width: usize,
     pub height: usize,
     pub pitch: usize, // Bytes per row
@@ -13,49 +15,90 @@ pub struct Framebuffer {
 }
 
 impl Framebuffer {
-    /// Create framebuffer from Limine response
+    /// Create framebuffer from Limine response with back buffer
     pub fn from_limine() -> Option<Self> {
         let response = FRAMEBUFFER_REQUEST.get_response()?;
         let fb = response.framebuffers().next()?;
 
+        let width = fb.width() as usize;
+        let height = fb.height() as usize;
+        let pitch = fb.pitch() as usize;
+
+        // Allocate back buffer (same size as front buffer row stride)
+        let row_pixels = pitch / 4;
+        let back_buffer = alloc::vec![0u32; row_pixels * height];
+
         Some(Self {
             address: fb.addr() as *mut u32,
-            width: fb.width() as usize,
-            height: fb.height() as usize,
-            pitch: fb.pitch() as usize,
+            back_buffer,
+            width,
+            height,
+            pitch,
             bpp: fb.bpp(),
         })
     }
 
-    /// Put a pixel at (x, y) with color
+    /// Put a pixel at (x, y) with color - writes to BACK buffer
     #[inline]
     pub fn put_pixel(&self, x: usize, y: usize, color: u32) {
         if x < self.width && y < self.height {
+            let offset = y * (self.pitch / 4) + x;
+            // Safety: we're writing to our own back buffer within bounds
             unsafe {
-                let offset = y * (self.pitch / 4) + x;
-                *self.address.add(offset) = color;
+                let ptr = self.back_buffer.as_ptr() as *mut u32;
+                *ptr.add(offset) = color;
             }
         }
     }
 
-    /// Get pixel at (x, y)
+    /// Get pixel at (x, y) from back buffer
     #[inline]
     pub fn get_pixel(&self, x: usize, y: usize) -> u32 {
         if x < self.width && y < self.height {
-            unsafe {
-                let offset = y * (self.pitch / 4) + x;
-                *self.address.add(offset)
-            }
+            let offset = y * (self.pitch / 4) + x;
+            self.back_buffer[offset]
         } else {
             0
         }
     }
 
-    /// Clear the framebuffer with a color
+    /// Clear the back buffer with a color (optimized 64-bit writes)
     pub fn clear(&self, color: u32) {
-        for y in 0..self.height {
-            for x in 0..self.width {
-                self.put_pixel(x, y, color);
+        let row_pixels = self.pitch / 4;
+        let total = row_pixels * self.height;
+        let ptr = self.back_buffer.as_ptr() as *mut u64;
+        let color64 = ((color as u64) << 32) | (color as u64);
+
+        unsafe {
+            for i in 0..(total / 2) {
+                *ptr.add(i) = color64;
+            }
+            // Handle odd pixel if any
+            if total % 2 == 1 {
+                let ptr32 = self.back_buffer.as_ptr() as *mut u32;
+                *ptr32.add(total - 1) = color;
+            }
+        }
+    }
+
+    /// Present: copy back buffer to front buffer (display)
+    pub fn present(&self) {
+        let row_pixels = self.pitch / 4;
+        let total = row_pixels * self.height;
+
+        unsafe {
+            // Fast copy using 64-bit writes
+            let src = self.back_buffer.as_ptr() as *const u64;
+            let dst = self.address as *mut u64;
+
+            for i in 0..(total / 2) {
+                *dst.add(i) = *src.add(i);
+            }
+            // Handle odd pixel if any
+            if total % 2 == 1 {
+                let src32 = self.back_buffer.as_ptr() as *const u32;
+                let dst32 = self.address;
+                *dst32.add(total - 1) = *src32.add(total - 1);
             }
         }
     }
@@ -82,10 +125,10 @@ impl Framebuffer {
         }
     }
 
-    /// Get raw pointer to a scanline
+    /// Get raw pointer to a scanline in the BACK buffer
     #[inline]
     pub unsafe fn scanline_ptr(&self, y: usize) -> *mut u32 {
-        unsafe { self.address.add(y * (self.pitch / 4)) }
+        unsafe { (self.back_buffer.as_ptr() as *mut u32).add(y * (self.pitch / 4)) }
     }
 
     /// Get total pixel count

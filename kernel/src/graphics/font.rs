@@ -93,37 +93,37 @@ pub fn draw_string(x: usize, y: usize, s: &str, color: u32, scale: usize) {
     }
 }
 
-/// Draw FPS counter in top-right corner with background
-pub fn draw_fps(fps: u32, fb_width: usize) {
+/// Draw FPS counter in top-left corner with solid background
+/// Uses a larger, more visible format
+pub fn draw_fps(fps: u32, _fb_width: usize) {
     // Format: "FPS: XXX"
     let mut buf = [0u8; 12];
     let s = format_fps(fps, &mut buf);
 
-    let scale = 2;
+    let scale = 3; // Larger scale for visibility
     let char_width = 8 * scale + scale;
     let text_width = s.len() * char_width;
-    let x = fb_width.saturating_sub(text_width + 20);
+    let x = 10; // Top-left corner for visibility
     let y = 10;
 
-    // Draw background rectangle
-    let bg_color = 0x00000000u32; // Black
+    // Draw solid background rectangle first
+    let bg_color = 0x00202040u32; // Dark blue-gray, matches clear color
     let fb_guard = FRAMEBUFFER.lock();
     if let Some(fb) = fb_guard.as_ref() {
-        let y_start = if y >= 2 { y - 2 } else { 0 };
-        let y_end = y + 8 * scale + 4;
-        let x_start = if x >= 4 { x - 4 } else { 0 };
-        let x_end = x + text_width + 4;
+        let padding = 6;
+        let y_start = if y >= padding { y - padding } else { 0 };
+        let y_end = (y + 8 * scale + padding).min(fb.height);
+        let x_start = if x >= padding { x - padding } else { 0 };
+        let x_end = (x + text_width + padding).min(fb.width);
         for py in y_start..y_end {
             for px in x_start..x_end {
-                if px < fb.width && py < fb.height {
-                    fb.put_pixel(px, py, bg_color);
-                }
+                fb.put_pixel(px, py, bg_color);
             }
         }
     }
     drop(fb_guard);
 
-    let color = 0x0000FF00; // Green for visibility
+    let color = 0x00FFFF00; // Yellow for maximum visibility
     draw_string(x, y, s, color, scale);
 }
 

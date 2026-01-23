@@ -119,5 +119,5 @@ impl WorkCounter {
 }
 
 /// Global barriers for frame synchronization
-pub static RENDER_BARRIER: CoreBarrier = CoreBarrier::new(3); // 3 render cores
+pub static RENDER_BARRIER: CoreBarrier = CoreBarrier::new(4); // 4 render cores (Core 0-3)
 pub static FRAME_BARRIER: CoreBarrier = CoreBarrier::new(4); // All cores except network

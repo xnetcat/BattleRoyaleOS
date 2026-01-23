@@ -16,39 +16,24 @@ mod memory;
 mod net;
 mod smp;
 
-use boot::{BASE_REVISION, FRAMEBUFFER_REQUEST, HHDM_REQUEST, MEMORY_MAP_REQUEST, SMP_REQUEST};
+use boot::{BASE_REVISION, HHDM_REQUEST, MEMORY_MAP_REQUEST};
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use glam::{Mat4, Vec3};
 use graphics::{
     font,
     framebuffer::rgb,
-    pipeline::{look_at, perspective, transform_triangle},
-    rasterizer::{self, rasterize_triangle_shaded, rasterize_triangle_with_context},
-    tiles,
+    pipeline::{look_at, perspective, transform_and_bin},
+    rasterizer::{self, rasterize_screen_triangle_in_tile},
+    tiles::{self, TILE_BINS_LOCKFREE, TILE_QUEUE},
     zbuffer,
 };
 use renderer::mesh;
 
-/// Simple timestamp counter for timing using TSC
-static TICKS: AtomicU64 = AtomicU64::new(0);
-
 /// Read the CPU timestamp counter
 #[inline]
 fn read_tsc() -> u64 {
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
-}
-
-/// Get current tick count (approximate milliseconds)
-fn get_ticks() -> u64 {
-    TICKS.load(Ordering::Relaxed)
-}
-
-/// Increment tick counter
-fn tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 #[unsafe(no_mangle)]
@@ -185,24 +170,26 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // Estimate TSC frequency (assume ~2GHz for QEMU)
     let tsc_per_second: u64 = 2_000_000_000;
 
-    serial_println!("Creating test meshes...");
+    // Frame limiter: target 60 FPS to prevent flickering
+    let target_fps: u64 = 60;
+    let tsc_per_frame = tsc_per_second / target_fps;
+    let mut last_frame_time = read_tsc();
 
-    // Create a test cube
+    // Create scene meshes
     let cube = mesh::create_cube(Vec3::new(0.8, 0.2, 0.2));
-    serial_println!("Cube created: {} triangles", cube.triangle_count());
+    let terrain = mesh::create_terrain_grid(30.0, 30, Vec3::new(0.2, 0.6, 0.3));
+    let player = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
 
-    // Create a small ground for testing (reduced from 100 to 10)
-    let ground = mesh::create_ground_mesh(10.0, Vec3::new(0.2, 0.5, 0.2));
-    serial_println!("Ground created: {} triangles", ground.triangle_count());
+    serial_println!("Scene: {} terrain + {} cube + {} player = {} triangles",
+        terrain.triangle_count(), cube.triangle_count(), player.triangle_count(),
+        terrain.triangle_count() + cube.triangle_count() + player.triangle_count());
 
     // Camera setup
     let aspect = fb_width as f32 / fb_height as f32;
-    // 60 degrees in radians = 60 * PI / 180 = PI/3 ≈ 1.0472
     let fov_radians = core::f32::consts::PI / 3.0;
-    // Use reasonable near/far for better depth precision
-    let projection = perspective(fov_radians, aspect, 1.0, 100.0);
+    let projection = perspective(fov_radians, aspect, 0.1, 100.0);
 
-    serial_println!("Entering main loop...");
+    serial_println!("Parallel rendering: 4 cores active");
 
     loop {
         // Poll keyboard
@@ -228,14 +215,14 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         // Poll network stack every frame
         net::stack::poll(frame_count as i64);
 
-        // Acquire render context for this frame (optimized - no locks during rendering)
+        // Acquire render context for this frame
         let render_ctx = match rasterizer::RenderContext::acquire() {
             Some(ctx) => ctx,
             None => continue,
         };
 
-        // Clear framebuffer and z-buffer using render context
-        render_ctx.clear(rgb(30, 30, 50)); // Dark blue-gray background
+        // Clear back buffer and z-buffer (double buffering prevents flicker)
+        render_ctx.clear(rgb(30, 30, 50));
         render_ctx.clear_zbuffer();
 
         // Update rotation for spinning cube
@@ -250,19 +237,51 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         );
         let view = look_at(camera_pos, Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
 
-        // Render ground
-        let ground_model = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)); // Below the cube
-        render_mesh_with_ctx(&render_ctx, &ground, &ground_model, &view, &projection, fb_width, fb_height);
+        // === PARALLEL RENDERING (4 cores) ===
 
-        // Render spinning cube
+        // 1. Clear lock-free bins and reset triangle buffer
+        tiles::clear_lockfree_bins();
+        tiles::reset_triangle_buffer();
+
+        // 2. Transform and bin all triangles (Core 0 does this sequentially)
+        let terrain_model = Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0));
+        bin_mesh(&terrain, &terrain_model, &view, &projection, fb_width as f32, fb_height as f32);
+
         let cube_model = Mat4::from_rotation_y(rotation) * Mat4::from_rotation_x(rotation * 0.7);
-        render_mesh_with_ctx(&render_ctx, &cube, &cube_model, &view, &projection, fb_width, fb_height);
+        bin_mesh(&cube, &cube_model, &view, &projection, fb_width as f32, fb_height as f32);
+
+        // Add player at a fixed position
+        let player_model = Mat4::from_translation(Vec3::new(2.0, -1.5, 0.0));
+        bin_mesh(&player, &player_model, &view, &projection, fb_width as f32, fb_height as f32);
+
+        // 3. Reset tile work queue
+        tiles::reset();
+
+        // 4. Signal worker cores (1-3) to start rendering
+        smp::scheduler::start_render();
+
+        // 5. Core 0 also helps rasterize tiles
+        render_worker(0);
+
+        // 6. Wait for all cores (0-3) to finish at the barrier
+        smp::sync::RENDER_BARRIER.wait();
+
+        // 7. Signal render complete (allows worker cores to wait for next frame)
+        smp::scheduler::end_render();
 
         // Drop render context before drawing FPS (font uses its own lock)
         drop(render_ctx);
 
         // Draw FPS counter
         font::draw_fps(current_fps, fb_width);
+
+        // Present: copy back buffer to display
+        {
+            let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+            if let Some(fb) = fb_guard.as_ref() {
+                fb.present();
+            }
+        }
 
         // Update FPS counter
         fps_frame_count += 1;
@@ -274,96 +293,142 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
             last_fps_time = now;
         }
 
-        // Print FPS to serial every 100 frames
         frame_count = frame_count.wrapping_add(1);
-        if frame_count % 100 == 0 {
-            serial_println!("Frame {} FPS: {}", frame_count, current_fps);
+
+        // Frame limiter: wait until target frame time has elapsed
+        loop {
+            let now = read_tsc();
+            let elapsed = now.wrapping_sub(last_frame_time);
+            if elapsed >= tsc_per_frame {
+                last_frame_time = now;
+                break;
+            }
+            core::hint::spin_loop();
         }
     }
 
     halt_loop();
 }
 
-/// Render a mesh using a pre-acquired render context (optimized)
-fn render_mesh_with_ctx(
-    ctx: &rasterizer::RenderContext,
+/// Transform mesh triangles, create ScreenTriangles, and bin them to tiles
+/// Returns the number of triangles successfully binned
+fn bin_mesh(
     mesh: &mesh::Mesh,
     model: &Mat4,
     view: &Mat4,
     projection: &Mat4,
-    fb_width: usize,
-    fb_height: usize,
-) {
+    fb_width: f32,
+    fb_height: f32,
+) -> usize {
+    let mut binned = 0;
+
     for i in 0..mesh.triangle_count() {
         if let Some((v0, v1, v2)) = mesh.get_triangle(i) {
-            if let Some((tv0, tv1, tv2)) = transform_triangle(
+            // Transform and create ScreenTriangle
+            if let Some(screen_tri) = transform_and_bin(
                 v0,
                 v1,
                 v2,
                 model,
                 view,
                 projection,
-                fb_width as f32,
-                fb_height as f32,
+                fb_width,
+                fb_height,
             ) {
-                rasterize_triangle_with_context(ctx, &tv0, &tv1, &tv2);
-            }
-        }
-    }
-}
-
-/// Render all players
-fn render_players(view: &Mat4, projection: &Mat4, fb_width: usize, fb_height: usize) {
-    let world_guard = game::world::GAME_WORLD.lock();
-    if let Some(world) = world_guard.as_ref() {
-        let player_mesh = mesh::create_player_mesh(
-            Vec3::new(0.3, 0.3, 0.8), // Blue body
-            Vec3::new(0.9, 0.7, 0.6), // Skin head
-        );
-
-        for player in &world.players {
-            if !player.is_alive() || player.in_bus {
-                continue;
-            }
-
-            let model = Mat4::from_translation(player.position)
-                * Mat4::from_rotation_y(player.yaw);
-
-            for i in 0..player_mesh.triangle_count() {
-                if let Some((v0, v1, v2)) = player_mesh.get_triangle(i) {
-                    if let Some((tv0, tv1, tv2)) = transform_triangle(
-                        v0,
-                        v1,
-                        v2,
-                        &model,
-                        view,
-                        projection,
-                        fb_width as f32,
-                        fb_height as f32,
-                    ) {
-                        rasterize_triangle_shaded(&tv0, &tv1, &tv2);
-                    }
+                // Add to frame buffer and get index
+                if let Some(tri_idx) = tiles::add_triangle(screen_tri) {
+                    // Bin to overlapping tiles
+                    tiles::bin_triangle_lockfree(tri_idx, &screen_tri);
+                    binned += 1;
                 }
             }
         }
     }
+
+    binned
 }
 
-/// Render worker for rasterizer cores
+/// Render worker for rasterizer cores (including Core 0)
+/// Steals tiles from the work queue and rasterizes all triangles binned to each tile
+/// IMPORTANT: This function must always complete normally - never return early
+/// because all cores must hit the barrier after this returns
 pub fn render_worker(_rasterizer_id: u8) {
-    // In a full implementation, this would:
-    // 1. Get tiles from TILE_QUEUE
-    // 2. Rasterize triangles for those tiles
-    // 3. Write to framebuffer
+    // Acquire render context for this worker
+    let ctx = match rasterizer::RenderContext::acquire() {
+        Some(c) => c,
+        None => return, // Context not available - just return (barrier will be hit by caller)
+    };
 
-    // For now, the main loop does all rendering single-threaded
+    // Work-stealing loop: grab tiles until none remain
+    loop {
+        // Get next tile from queue
+        let tile_info = {
+            let queue_guard = TILE_QUEUE.lock();
+            match queue_guard.as_ref() {
+                Some(queue) => {
+                    match queue.get_next_tile_idx() {
+                        Some(idx) => {
+                            queue.get_tile(idx).map(|tile| {
+                                (idx, tile.x as i32, tile.y as i32, tile.width as i32, tile.height as i32)
+                            })
+                        }
+                        None => None, // No more tiles
+                    }
+                }
+                None => None, // Queue not initialized
+            }
+        };
+
+        match tile_info {
+            Some((tile_idx, tile_x, tile_y, tile_w, tile_h)) => {
+                // Rasterize all triangles in this tile's bin
+                rasterize_tile(tile_idx, tile_x, tile_y, tile_w, tile_h, &ctx);
+            }
+            None => break, // No more tiles to process
+        }
+    }
+}
+
+/// Rasterize all triangles binned to a specific tile
+fn rasterize_tile(
+    tile_idx: usize,
+    tile_x: i32,
+    tile_y: i32,
+    tile_w: i32,
+    tile_h: i32,
+    ctx: &rasterizer::RenderContext,
+) {
+    let bin = &TILE_BINS_LOCKFREE[tile_idx];
+    let tri_count = bin.len();
+
+    // Tile bounds
+    let tile_min_x = tile_x;
+    let tile_max_x = tile_x + tile_w - 1;
+    let tile_min_y = tile_y;
+    let tile_max_y = tile_y + tile_h - 1;
+
+    // Rasterize each triangle in the bin
+    for i in 0..tri_count {
+        if let Some(tri_idx) = bin.get(i) {
+            if let Some(tri) = tiles::get_triangle(tri_idx) {
+                rasterize_screen_triangle_in_tile(
+                    ctx,
+                    &tri,
+                    tile_min_x,
+                    tile_max_x,
+                    tile_min_y,
+                    tile_max_y,
+                );
+            }
+        }
+    }
 }
 
 /// Network worker for network core
 pub fn network_worker() {
-    // Poll network stack
-    let ticks = get_ticks() as i64;
-    net::stack::poll(ticks);
+    // Poll network stack with TSC-based timestamp
+    let timestamp = (read_tsc() / 1_000_000) as i64; // Rough ms approximation
+    net::stack::poll(timestamp);
 
     // Process incoming packets
     net::protocol::process_incoming();

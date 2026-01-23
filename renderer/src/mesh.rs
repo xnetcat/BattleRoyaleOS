@@ -1,6 +1,7 @@
 //! Procedural mesh generation
 
 use crate::vertex::Vertex;
+use alloc::vec;
 use alloc::vec::Vec;
 use glam::{Vec2, Vec3};
 
@@ -279,6 +280,93 @@ pub fn create_ground_mesh(size: f32, color: Vec3) -> Mesh {
     ));
 
     mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+
+    mesh
+}
+
+/// Create a terrain grid mesh with height variation
+/// subdivisions: number of quads per side (total triangles = 2 * subdivisions^2)
+pub fn create_terrain_grid(size: f32, subdivisions: usize, base_color: Vec3) -> Mesh {
+    let mut mesh = Mesh::new();
+
+    let half = size / 2.0;
+    let step = size / subdivisions as f32;
+
+    // Create vertices
+    for z in 0..=subdivisions {
+        for x in 0..=subdivisions {
+            let fx = x as f32 * step - half;
+            let fz = z as f32 * step - half;
+
+            // Simple height variation using a combination of sine waves
+            let h1 = libm::sinf(fx * 0.5) * 0.3;
+            let h2 = libm::sinf(fz * 0.5) * 0.3;
+            let h3 = libm::sinf((fx + fz) * 0.3) * 0.2;
+            let height = h1 + h2 + h3;
+
+            // Color variation based on height
+            let color_factor = (height + 1.0) * 0.5; // 0-1 range
+            let color = Vec3::new(
+                base_color.x * (0.7 + color_factor * 0.3),
+                base_color.y * (0.5 + color_factor * 0.5),
+                base_color.z * (0.7 + color_factor * 0.3),
+            );
+
+            mesh.vertices.push(Vertex::new(
+                Vec3::new(fx, height, fz),
+                Vec3::Y, // Will be recalculated for proper normals
+                color,
+                Vec2::new(x as f32 / subdivisions as f32, z as f32 / subdivisions as f32),
+            ));
+        }
+    }
+
+    // Create indices
+    let row_size = subdivisions + 1;
+    for z in 0..subdivisions {
+        for x in 0..subdivisions {
+            let tl = (z * row_size + x) as u32;
+            let tr = tl + 1;
+            let bl = tl + row_size as u32;
+            let br = bl + 1;
+
+            // Two triangles per quad
+            mesh.indices.extend([tl, bl, tr]); // First triangle
+            mesh.indices.extend([tr, bl, br]); // Second triangle
+        }
+    }
+
+    // Calculate normals (average of adjacent face normals)
+    let mut normals = vec![Vec3::ZERO; mesh.vertices.len()];
+
+    for i in (0..mesh.indices.len()).step_by(3) {
+        let i0 = mesh.indices[i] as usize;
+        let i1 = mesh.indices[i + 1] as usize;
+        let i2 = mesh.indices[i + 2] as usize;
+
+        let v0 = mesh.vertices[i0].position;
+        let v1 = mesh.vertices[i1].position;
+        let v2 = mesh.vertices[i2].position;
+
+        let edge1 = v1 - v0;
+        let edge2 = v2 - v0;
+        let face_normal = edge1.cross(edge2);
+
+        normals[i0] += face_normal;
+        normals[i1] += face_normal;
+        normals[i2] += face_normal;
+    }
+
+    // Normalize and apply
+    for (i, normal) in normals.iter().enumerate() {
+        let length = libm::sqrtf(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+        let n = if length > 0.0001 {
+            Vec3::new(normal.x / length, normal.y / length, normal.z / length)
+        } else {
+            Vec3::Y
+        };
+        mesh.vertices[i].normal = n;
+    }
 
     mesh
 }

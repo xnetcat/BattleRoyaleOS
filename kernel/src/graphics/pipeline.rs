@@ -1,5 +1,6 @@
 //! Vertex transformation pipeline
 
+use super::tiles::ScreenTriangle;
 use glam::{Mat4, Vec3, Vec4};
 use renderer::vertex::Vertex;
 
@@ -112,4 +113,46 @@ pub fn apply_lighting(vertex: &mut Vertex, light_dir: Vec3, ambient: f32) {
     let total_light = (ambient + intensity * (1.0 - ambient)).clamp(0.0, 1.0);
 
     vertex.color *= total_light;
+}
+
+/// Transform triangle and create a ScreenTriangle for binning
+/// Returns None if triangle is culled or degenerate
+pub fn transform_and_bin(
+    v0: &Vertex,
+    v1: &Vertex,
+    v2: &Vertex,
+    model: &Mat4,
+    view: &Mat4,
+    projection: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+) -> Option<ScreenTriangle> {
+    // Transform all three vertices
+    let tv0 = transform_vertex(v0, model, view, projection, fb_width, fb_height);
+    let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
+    let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
+
+    // Near plane clipping (simple rejection)
+    if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
+        return None;
+    }
+
+    // Far plane clipping
+    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
+        return None;
+    }
+
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+
+    // In screen space with Y pointing down, front-facing triangles
+    // (CCW in world space) become CW, giving negative cross_z
+    if cross_z > 0.0 {
+        return None;
+    }
+
+    // Create ScreenTriangle with pre-computed edge coefficients
+    ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32)
 }
