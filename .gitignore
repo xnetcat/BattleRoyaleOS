@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+/iso_root/
+*.iso
+
+# QEMU logs
+qemu.log
+
+# Limine bootloader (cloned during build)
+/limine/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Rust
+Cargo.lock
+**/*.rs.bk

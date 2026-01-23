@@ -1,0 +1,15 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+limine = { workspace = true }
+x86_64 = { workspace = true }
+spin = { workspace = true }
+talc = { workspace = true }
+smoltcp = { workspace = true }
+glam = { workspace = true }
+libm = "0.2"
+renderer = { path = "../renderer" }
+protocol = { path = "../protocol" }
