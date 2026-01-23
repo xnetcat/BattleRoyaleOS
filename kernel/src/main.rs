@@ -18,7 +18,6 @@ mod smp;
 
 use boot::{BASE_REVISION, HHDM_REQUEST, MEMORY_MAP_REQUEST};
 use core::panic::PanicInfo;
-use core::sync::atomic::Ordering;
 use glam::{Mat4, Vec3};
 use graphics::{
     font,
@@ -175,14 +174,26 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let tsc_per_frame = tsc_per_second / target_fps;
     let mut last_frame_time = read_tsc();
 
-    // Create scene meshes
-    let cube = mesh::create_cube(Vec3::new(0.8, 0.2, 0.2));
-    let terrain = mesh::create_terrain_grid(30.0, 30, Vec3::new(0.2, 0.6, 0.3));
-    let player = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
+    // Create reusable meshes for game entities
+    let terrain = mesh::create_terrain_grid(100.0, 50, Vec3::new(0.2, 0.6, 0.3));
+    let player_mesh = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
+    let wall_mesh = mesh::create_wall_mesh(Vec3::new(0.6, 0.5, 0.4));
+    let bus_mesh = mesh::create_battle_bus_mesh();
 
-    serial_println!("Scene: {} terrain + {} cube + {} player = {} triangles",
-        terrain.triangle_count(), cube.triangle_count(), player.triangle_count(),
-        terrain.triangle_count() + cube.triangle_count() + player.triangle_count());
+    serial_println!("Meshes: terrain={} player={} wall={} bus={}",
+        terrain.triangle_count(), player_mesh.triangle_count(),
+        wall_mesh.triangle_count(), bus_mesh.triangle_count());
+
+    // Add local player to game world
+    let local_player_id = {
+        let mut world = game::world::GAME_WORLD.lock();
+        if let Some(w) = world.as_mut() {
+            w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
+        } else {
+            None
+        }
+    };
+    serial_println!("Local player ID: {:?}", local_player_id);
 
     // Camera setup
     let aspect = fb_width as f32 / fb_height as f32;
@@ -190,6 +201,10 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let projection = perspective(fov_radians, aspect, 0.1, 100.0);
 
     serial_println!("Parallel rendering: 4 cores active");
+
+    // Player rotation (controlled by A/D since no mouse)
+    let mut player_yaw: f32 = 0.0;
+    let mut input_sequence: u32 = 0;
 
     loop {
         // Poll keyboard
@@ -201,13 +216,47 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
             break;
         }
 
-        // Update game world (every 5 frames ~= 2Hz at 10 FPS)
-        if frame_count % 5 == 0 {
-            if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
-                world.update(0.5);
+        // Apply keyboard input to local player
+        if let Some(id) = local_player_id {
+            let key_state = game::input::KEY_STATE.lock().clone();
+
+            // Update player rotation with A/D keys
+            if key_state.a {
+                player_yaw -= 0.05;
+            }
+            if key_state.d {
+                player_yaw += 0.05;
             }
 
-            // Process network packets
+            // Create input from keyboard state
+            input_sequence += 1;
+            let input = protocol::packets::ClientInput {
+                player_id: id,
+                sequence: input_sequence,
+                forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
+                strafe: 0, // A/D used for rotation instead
+                jump: key_state.space,
+                crouch: key_state.ctrl,
+                fire: key_state.shift,
+                build: key_state.b,
+                exit_bus: key_state.space,
+                yaw: (player_yaw.to_degrees() * 100.0) as i16,
+                pitch: 0,
+            };
+
+            // Apply input to game world
+            if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                world.apply_input(id, &input);
+            }
+        }
+
+        // Update game world physics
+        if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+            world.update(1.0 / 60.0);
+        }
+
+        // Process network (less frequently)
+        if frame_count % 10 == 0 {
             net::protocol::process_incoming();
             net::protocol::broadcast_world_state();
         }
@@ -225,17 +274,32 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         render_ctx.clear(rgb(30, 30, 50));
         render_ctx.clear_zbuffer();
 
-        // Update rotation for spinning cube
-        rotation += 0.02;
-
-        // Camera position (orbit around origin)
-        let camera_dist = 5.0;
-        let camera_pos = Vec3::new(
-            libm::sinf(rotation * 0.3) * camera_dist,
-            2.0,
-            libm::cosf(rotation * 0.3) * camera_dist,
-        );
-        let view = look_at(camera_pos, Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
+        // Get camera position from local player (or default orbit)
+        rotation += 0.01;
+        let (camera_pos, camera_target) = {
+            let world = game::world::GAME_WORLD.lock();
+            if let (Some(w), Some(id)) = (world.as_ref(), local_player_id) {
+                if let Some(player) = w.get_player(id) {
+                    // Third-person camera behind player
+                    let cam_offset = Vec3::new(
+                        -libm::sinf(player.yaw) * 5.0,
+                        3.0,
+                        -libm::cosf(player.yaw) * 5.0,
+                    );
+                    let pos = player.position + cam_offset;
+                    let target = player.position + Vec3::new(0.0, 1.0, 0.0);
+                    (pos, target)
+                } else {
+                    // Default orbit camera
+                    let dist = 20.0;
+                    (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+                }
+            } else {
+                let dist = 20.0;
+                (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+            }
+        };
+        let view = look_at(camera_pos, camera_target, Vec3::Y);
 
         // === PARALLEL RENDERING (4 cores) ===
 
@@ -243,16 +307,38 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         tiles::clear_lockfree_bins();
         tiles::reset_triangle_buffer();
 
-        // 2. Transform and bin all triangles (Core 0 does this sequentially)
-        let terrain_model = Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0));
+        // 2. Transform and bin terrain
+        let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
         bin_mesh(&terrain, &terrain_model, &view, &projection, fb_width as f32, fb_height as f32);
 
-        let cube_model = Mat4::from_rotation_y(rotation) * Mat4::from_rotation_x(rotation * 0.7);
-        bin_mesh(&cube, &cube_model, &view, &projection, fb_width as f32, fb_height as f32);
+        // 3. Render game world entities
+        {
+            let world = game::world::GAME_WORLD.lock();
+            if let Some(w) = world.as_ref() {
+                // Render battle bus if active
+                if w.bus.active {
+                    let bus_model = Mat4::from_translation(w.bus.position);
+                    bin_mesh(&bus_mesh, &bus_model, &view, &projection, fb_width as f32, fb_height as f32);
+                }
 
-        // Add player at a fixed position
-        let player_model = Mat4::from_translation(Vec3::new(2.0, -1.5, 0.0));
-        bin_mesh(&player, &player_model, &view, &projection, fb_width as f32, fb_height as f32);
+                // Render all players
+                for player in &w.players {
+                    if !player.is_alive() || player.in_bus {
+                        continue;
+                    }
+                    let model = Mat4::from_translation(player.position)
+                        * Mat4::from_rotation_y(player.yaw);
+                    bin_mesh(&player_mesh, &model, &view, &projection, fb_width as f32, fb_height as f32);
+                }
+
+                // Render buildings
+                for building in &w.buildings {
+                    let model = Mat4::from_translation(building.position)
+                        * Mat4::from_rotation_y(building.rotation);
+                    bin_mesh(&wall_mesh, &model, &view, &projection, fb_width as f32, fb_height as f32);
+                }
+            }
+        }
 
         // 3. Reset tile work queue
         tiles::reset();
@@ -274,6 +360,25 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
 
         // Draw FPS counter
         font::draw_fps(current_fps, fb_width);
+
+        // Draw game HUD (health, materials, alive count)
+        {
+            let world_guard = game::world::GAME_WORLD.lock();
+            if let Some(world) = world_guard.as_ref() {
+                let (health, materials) = if let Some(id) = local_player_id {
+                    if let Some(player) = world.get_player(id) {
+                        (player.health, player.materials)
+                    } else {
+                        (100, 0)
+                    }
+                } else {
+                    (100, 0)
+                };
+                let alive = world.players.iter().filter(|p| p.health > 0).count();
+                let total = world.players.len();
+                font::draw_hud(health, materials, alive, total, fb_width, fb_height);
+            }
+        }
 
         // Present: copy back buffer to display
         {

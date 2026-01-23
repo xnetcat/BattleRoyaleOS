@@ -20,7 +20,7 @@ pub struct PlayerState {
 }
 
 impl PlayerState {
-    pub const SIZE: usize = 24;
+    pub const SIZE: usize = 21; // 1 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 = 21 bytes
 
     pub fn new(player_id: u8) -> Self {
         Self {

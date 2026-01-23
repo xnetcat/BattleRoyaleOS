@@ -2,9 +2,9 @@
 
 use super::framebuffer::FRAMEBUFFER;
 
-/// 8x8 bitmap font data for digits 0-9 and a few characters
+/// 8x8 bitmap font data for digits and letters
 /// Each character is 8 bytes, one byte per row
-static FONT_DATA: [[u8; 8]; 16] = [
+static FONT_DATA: [[u8; 8]; 32] = [
     // 0
     [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
     // 1
@@ -25,31 +25,78 @@ static FONT_DATA: [[u8; 8]; 16] = [
     [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
     // 9
     [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x0C, 0x38, 0x00],
-    // F
+    // A (10)
+    [0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00],
+    // E (11)
+    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00],
+    // F (12)
     [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // P
+    // H (13)
+    [0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+    // I (14)
+    [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
+    // L (15)
+    [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00],
+    // M (16)
+    [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
+    // P (17)
     [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // S
+    // S (18)
     [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00],
-    // : (colon)
+    // T (19)
+    [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
+    // V (20)
+    [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
+    // : (21)
     [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
-    // space
+    // space (22)
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-    // . (period)
+    // . (23)
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
+    // / (24)
+    [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
+    // R (25)
+    [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
+    // O (26)
+    [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+    // N (27)
+    [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00],
+    // D (28)
+    [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
+    // B (29)
+    [0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00],
+    // U (30)
+    [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+    // X (31) - unused padding
+    [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00],
 ];
 
 /// Get glyph index for a character
 fn char_to_glyph(c: char) -> usize {
     match c {
         '0'..='9' => (c as usize) - ('0' as usize),
-        'F' | 'f' => 10,
-        'P' | 'p' => 11,
-        'S' | 's' => 12,
-        ':' => 13,
-        ' ' => 14,
-        '.' => 15,
-        _ => 14, // Default to space
+        'A' | 'a' => 10,
+        'E' | 'e' => 11,
+        'F' | 'f' => 12,
+        'H' | 'h' => 13,
+        'I' | 'i' => 14,
+        'L' | 'l' => 15,
+        'M' | 'm' => 16,
+        'P' | 'p' => 17,
+        'S' | 's' => 18,
+        'T' | 't' => 19,
+        'V' | 'v' => 20,
+        ':' => 21,
+        ' ' => 22,
+        '.' => 23,
+        '/' => 24,
+        'R' | 'r' => 25,
+        'O' | 'o' => 26,
+        'N' | 'n' => 27,
+        'D' | 'd' => 28,
+        'B' | 'b' => 29,
+        'U' | 'u' => 30,
+        _ => 22, // Default to space
     }
 }
 
@@ -125,6 +172,132 @@ pub fn draw_fps(fps: u32, _fb_width: usize) {
 
     let color = 0x00FFFF00; // Yellow for maximum visibility
     draw_string(x, y, s, color, scale);
+}
+
+/// Draw game HUD (health, materials, alive count)
+pub fn draw_hud(health: u8, materials: u32, alive: usize, total: usize, _fb_width: usize, fb_height: usize) {
+    let scale = 2;
+    let char_width = 8 * scale + scale;
+    let line_height = 8 * scale + 8;
+    let padding = 10;
+
+    // Bottom-left corner for HUD
+    let base_y = fb_height - padding - line_height * 3;
+
+    // Draw background
+    let bg_color = 0x00202040u32;
+    let fb_guard = FRAMEBUFFER.lock();
+    if let Some(fb) = fb_guard.as_ref() {
+        let bg_width = char_width * 12;
+        let bg_height = line_height * 3 + padding;
+        for py in base_y.saturating_sub(padding)..(base_y + bg_height).min(fb.height) {
+            for px in 0..(bg_width + padding * 2).min(fb.width) {
+                fb.put_pixel(px, py, bg_color);
+            }
+        }
+    }
+    drop(fb_guard);
+
+    // Health (red/green based on value)
+    let health_color = if health > 50 {
+        0x0000FF00 // Green
+    } else if health > 25 {
+        0x00FFFF00 // Yellow
+    } else {
+        0x00FF0000 // Red
+    };
+    let mut buf = [0u8; 16];
+    let health_str = format_stat("HP", health as u32, &mut buf);
+    draw_string(padding, base_y, health_str, health_color, scale);
+
+    // Materials (orange)
+    let mut buf2 = [0u8; 16];
+    let mat_str = format_stat("MAT", materials, &mut buf2);
+    draw_string(padding, base_y + line_height, mat_str, 0x00FFA500, scale);
+
+    // Alive count (white)
+    let mut buf3 = [0u8; 16];
+    let alive_str = format_alive(alive, total, &mut buf3);
+    draw_string(padding, base_y + line_height * 2, alive_str, 0x00FFFFFF, scale);
+}
+
+/// Format a stat line like "HP: 100"
+fn format_stat<'a>(label: &str, value: u32, buf: &'a mut [u8; 16]) -> &'a str {
+    let mut pos = 0;
+    for c in label.bytes() {
+        if pos < 16 {
+            buf[pos] = c;
+            pos += 1;
+        }
+    }
+    if pos < 16 {
+        buf[pos] = b':';
+        pos += 1;
+    }
+    if pos < 16 {
+        buf[pos] = b' ';
+        pos += 1;
+    }
+
+    // Write number
+    if value == 0 {
+        if pos < 16 {
+            buf[pos] = b'0';
+            pos += 1;
+        }
+    } else {
+        let mut n = value;
+        let start = pos;
+        while n > 0 && pos < 16 {
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            pos += 1;
+        }
+        // Reverse the digits
+        buf[start..pos].reverse();
+    }
+
+    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
+}
+
+/// Format alive count like "ALIVE: 50/100"
+fn format_alive<'a>(alive: usize, total: usize, buf: &'a mut [u8; 16]) -> &'a str {
+    let mut pos = 0;
+
+    // Write number (alive)
+    if alive == 0 {
+        buf[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut n = alive;
+        let start = pos;
+        while n > 0 && pos < 16 {
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            pos += 1;
+        }
+        buf[start..pos].reverse();
+    }
+
+    buf[pos] = b'/';
+    pos += 1;
+
+    // Write total
+    if total == 0 {
+        buf[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut n = total;
+        let start = pos;
+        while n > 0 && pos < 16 {
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            pos += 1;
+        }
+        buf[start..pos].reverse();
+    }
+
+    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
 /// Format FPS into a static buffer
