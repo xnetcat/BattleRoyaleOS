@@ -68,54 +68,42 @@ impl RenderContext {
         }
     }
 
-    /// Clear the framebuffer with a color (optimized unrolled loop)
+    /// Clear the framebuffer with a color (optimized 64-bit writes)
     pub fn clear(&self, color: u32) {
         let size = self.fb_width * self.fb_height;
+        // Write two pixels at a time using 64-bit stores
+        let color64 = (color as u64) | ((color as u64) << 32);
+        let ptr64 = self.fb_ptr as *mut u64;
+        let pairs = size / 2;
+
         unsafe {
-            let mut i = 0;
-            // Process 8 pixels at a time for better pipelining
-            while i + 8 <= size {
-                *self.fb_ptr.add(i) = color;
-                *self.fb_ptr.add(i + 1) = color;
-                *self.fb_ptr.add(i + 2) = color;
-                *self.fb_ptr.add(i + 3) = color;
-                *self.fb_ptr.add(i + 4) = color;
-                *self.fb_ptr.add(i + 5) = color;
-                *self.fb_ptr.add(i + 6) = color;
-                *self.fb_ptr.add(i + 7) = color;
-                i += 8;
+            for i in 0..pairs {
+                *ptr64.add(i) = color64;
             }
-            // Handle remaining pixels
-            while i < size {
-                *self.fb_ptr.add(i) = color;
-                i += 1;
+            // Handle odd pixel if present
+            if size & 1 != 0 {
+                *self.fb_ptr.add(size - 1) = color;
             }
         }
     }
 
-    /// Clear the z-buffer (optimized unrolled loop)
+    /// Clear the z-buffer (optimized 64-bit writes)
     /// Uses negative infinity since larger z = closer
     pub fn clear_zbuffer(&self) {
         let size = self.fb_width * self.fb_height;
-        let neg_inf = f32::NEG_INFINITY;
+        // Write two f32 values at a time using 64-bit stores
+        // NEG_INFINITY bit pattern: 0xFF800000
+        let neg_inf_bits: u64 = 0xFF800000_FF800000;
+        let ptr64 = self.zb_ptr as *mut u64;
+        let pairs = size / 2;
+
         unsafe {
-            let mut i = 0;
-            // Process 8 values at a time
-            while i + 8 <= size {
-                *self.zb_ptr.add(i) = neg_inf;
-                *self.zb_ptr.add(i + 1) = neg_inf;
-                *self.zb_ptr.add(i + 2) = neg_inf;
-                *self.zb_ptr.add(i + 3) = neg_inf;
-                *self.zb_ptr.add(i + 4) = neg_inf;
-                *self.zb_ptr.add(i + 5) = neg_inf;
-                *self.zb_ptr.add(i + 6) = neg_inf;
-                *self.zb_ptr.add(i + 7) = neg_inf;
-                i += 8;
+            for i in 0..pairs {
+                *ptr64.add(i) = neg_inf_bits;
             }
-            // Handle remaining
-            while i < size {
-                *self.zb_ptr.add(i) = neg_inf;
-                i += 1;
+            // Handle odd element if present
+            if size & 1 != 0 {
+                *self.zb_ptr.add(size - 1) = f32::NEG_INFINITY;
             }
         }
     }
