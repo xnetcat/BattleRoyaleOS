@@ -4,9 +4,9 @@
 
 This document tracks the implementation status of BattleRoyaleOS, a bare-metal Rust unikernel designed to run a 100-player Battle Royale game on local network.
 
-**Current Status**: Phase 1-3 Complete with Working Networking, Phase 4-5 Scaffolded
+**Current Status**: Phase 1-3 Complete, Phase 4 Partially Complete, Phase 5 Scaffolded
 
-**Latest Update**: E1000 TX/RX verified working with QEMU SLIRP networking. Rasterizer optimized.
+**Latest Update**: Parallel rendering on 4 cores with double buffering at 60 FPS. Game world rendering with player controls and HUD implemented.
 
 ---
 
@@ -173,13 +173,13 @@ qemu-system-x86_64 ... -netdev user,id=net0,hostfwd=udp::15000-:5000
 - [x] Added flat-shading variant for faster rendering
 
 #### TODO - Phase 3 Polish
-- [ ] Implement parallel tile rendering on cores 1-3 (blocked by QEMU TCG performance)
+- [x] Implement parallel tile rendering on cores 1-3 ✅ DONE (4 cores active)
 - [ ] Add texture mapping support
 - [ ] Implement simple lighting (directional)
 - [ ] Add fog for distance culling
 - [ ] Optimize triangle clipping
-- [ ] Add FPS counter overlay
-- [ ] Double buffering for tear-free rendering
+- [x] Add FPS counter overlay ✅ DONE (yellow text, top-left)
+- [x] Double buffering for tear-free rendering ✅ DONE (back buffer + present)
 
 #### Verification
 ```bash
@@ -221,7 +221,7 @@ enum Packet {
 }
 ```
 
-##### PlayerState (24 bytes, wire format)
+##### PlayerState (21 bytes, wire format)
 ```rust
 #[repr(C, packed)]
 struct PlayerState {
@@ -277,10 +277,10 @@ const PARACHUTE: u8 = 1 << 5;
 - [ ] **Lag Compensation**: Server rewind for hit detection
 
 ##### Medium Priority
-- [ ] **Player Rendering**: Render all connected players
+- [x] **Player Rendering**: Render all connected players ✅ DONE
 - [ ] **Name Tags**: Display player names above heads
 - [ ] **Kill Feed**: Show elimination messages
-- [ ] **Player Count UI**: Display alive/total players
+- [x] **Player Count UI**: Display alive/total players ✅ DONE (HUD shows "X/Y")
 - [ ] **Disconnect Handling**: Graceful player removal
 
 ##### Low Priority
@@ -395,21 +395,21 @@ let piece = BuildPiece::wall(snap_to_grid(build_pos), player.yaw);
 
 ---
 
-## SMP Implementation Status
+## SMP Implementation Status ✅ COMPLETE
 
 ### Core Assignment
 
 | Core | Role | Status |
 |------|------|--------|
-| 0 | Game Logic | ✅ Implemented |
-| 1-3 | Rasterizers | 🟡 Entry points exist, work distribution TODO |
-| 4 | Network | ✅ Entry point exists |
+| 0 | Game Logic + Rasterizer | ✅ Implemented |
+| 1-3 | Rasterizers | ✅ Fully working with render_worker() |
+| 4 | Network | ✅ Implemented |
 
-### TODO - SMP
-- [ ] **Tile Work Distribution**: Cores 1-3 pull tiles from atomic queue
-- [ ] **Frame Synchronization**: Barrier between cores at frame end
-- [ ] **Double Buffering**: Prevent tearing with buffer swap
-- [ ] **Load Balancing**: Dynamic tile assignment based on complexity
+### SMP Features ✅
+- [x] **Tile Work Distribution**: Lock-free atomic counter, work-stealing
+- [x] **Frame Synchronization**: CoreBarrier with 4 cores
+- [x] **Double Buffering**: Back buffer + present() for flicker-free
+- [x] **60 FPS Frame Limiter**: TSC-based timing
 
 ---
 
@@ -433,26 +433,28 @@ Physical Memory (from Limine):
 
 2. **No ICMP Support**: Can't ping the kernel yet (smoltcp ICMP feature not enabled).
 
-3. **Single-Core Rendering**: Tile parallel rendering not yet implemented, all rendering on core 0.
+3. ~~**Single-Core Rendering**~~: ✅ RESOLVED - Now parallel on 4 cores (0-3).
 
-4. **No Frame Timing**: No precise timing, frame rate depends on CPU speed.
+4. ~~**No Frame Timing**~~: ✅ RESOLVED - 60 FPS frame limiter using TSC.
 
-5. **Keyboard Only**: No mouse input support yet.
+5. **Keyboard Only**: No mouse input support yet (A/D keys for rotation).
 
 ---
 
 ## Performance Budget
 
-**Target**: 30 FPS at 1280×720
+**Target**: 60 FPS at 1280×800 ✅ ACHIEVED
 
 | Component | Budget | Current |
 |-----------|--------|---------|
-| Triangle binning | 2ms | Not measured |
-| Rasterization | 20ms | Single-core, unmeasured |
-| Buffer swap | 2ms | Direct write |
-| Game logic | 5ms | Minimal |
-| Network | 4ms | Polling |
-| **Total** | 33ms | ~30 FPS observed |
+| Triangle binning | 2ms | Lock-free atomic |
+| Rasterization | 10ms | 4-core parallel |
+| Buffer swap | 2ms | Double buffering + present() |
+| Game logic | 5ms | Player input + game world |
+| Network | 4ms | Polling on core 4 |
+| **Total** | 16.6ms | 60 FPS (frame-limited) |
+
+**Scene Complexity**: 5060 triangles (terrain + players + buildings + bus)
 
 ---
 
@@ -460,12 +462,12 @@ Physical Memory (from Limine):
 
 ### Immediate (Get Multiplayer Working)
 1. Implement proper client/server mode selection
-2. Test actual UDP packet transmission
+2. Test actual UDP packet transmission between instances
 3. Get two instances communicating
-4. Render remote players
+4. ~~Render remote players~~ ✅ DONE
 
 ### Short Term (Playable Game)
-1. Implement parallel rendering on cores 1-3
+1. ~~Implement parallel rendering on cores 1-3~~ ✅ DONE
 2. Add storm visualization and damage
 3. Implement building collision
 4. Add basic weapon/combat
@@ -501,13 +503,13 @@ Physical Memory (from Limine):
 - [ ] UDP packets receive successfully
 - [ ] Can communicate between two instances
 
-### Phase 3 🟡
+### Phase 3 ✅
 - [x] Framebuffer displays graphics
 - [x] Z-buffer prevents overdraw
 - [x] Triangle rasterization works
 - [x] Cube renders correctly
-- [ ] FPS counter shows >30
-- [ ] Parallel rendering on multiple cores
+- [x] FPS counter shows >30 (showing 60 FPS)
+- [x] Parallel rendering on multiple cores (4 cores active)
 
 ### Phase 4 ⬜
 - [ ] Players can join server
