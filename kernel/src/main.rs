@@ -113,33 +113,38 @@ extern "C" fn _start() -> ! {
             e1000_dev.bar0
         );
 
-        // Enable bus mastering
-        e1000_dev.enable_bus_master();
-        e1000_dev.enable_memory_space();
+        // NOTE: Skipping E1000 init for now - DMA address translation
+        // doesn't work correctly with kernel heap memory.
+        // TODO: Implement proper DMA allocator using HHDM-mapped physical memory
+        serial_println!("E1000: Skipping init (DMA not implemented properly)");
 
-        // Get MMIO address (with HHDM offset)
-        let hhdm_offset = *memory::dma::HHDM_OFFSET.lock();
-        let mmio_base = e1000_dev.bar0_address() + hhdm_offset;
-
-        // Initialize E1000 driver
-        if let Err(e) = drivers::e1000::init(mmio_base) {
-            serial_println!("E1000 init failed: {}", e);
-        } else {
-            serial_println!("E1000 initialized");
-
-            // Initialize network stack
-            net::stack::init();
-        }
+        // // Enable bus mastering
+        // e1000_dev.enable_bus_master();
+        // e1000_dev.enable_memory_space();
+        //
+        // // Get MMIO address (with HHDM offset)
+        // let hhdm_offset = *memory::dma::HHDM_OFFSET.lock();
+        // let mmio_base = e1000_dev.bar0_address() + hhdm_offset;
+        //
+        // // Initialize E1000 driver
+        // if let Err(e) = drivers::e1000::init(mmio_base) {
+        //     serial_println!("E1000 init failed: {}", e);
+        // } else {
+        //     serial_println!("E1000 initialized");
+        //     // Initialize network stack
+        //     net::stack::init();
+        // }
     } else {
         serial_println!("E1000 not found");
     }
 
     // Initialize game world
+    serial_println!("Initializing game world...");
     game::world::init(true); // Server mode
     serial_println!("Game world initialized");
 
-    // Initialize SMP (start worker cores)
-    smp::scheduler::init();
+    // Skip SMP for now - run single-threaded for stability
+    serial_println!("SMP disabled for stability testing");
 
     serial_println!("Starting main loop...");
 
@@ -150,48 +155,42 @@ extern "C" fn _start() -> ! {
 /// Main game loop (runs on Core 0)
 fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let mut frame_count = 0u32;
-    let mut last_fps_time = get_ticks();
-    let mut fps = 0u32;
     let mut rotation = 0.0f32;
+
+    serial_println!("Creating test meshes...");
 
     // Create a test cube
     let cube = mesh::create_cube(Vec3::new(0.8, 0.2, 0.2));
+    serial_println!("Cube created: {} triangles", cube.triangle_count());
 
-    // Create ground
-    let ground = mesh::create_ground_mesh(100.0, Vec3::new(0.2, 0.5, 0.2));
+    // Create a small ground for testing (reduced from 100 to 10)
+    let _ground = mesh::create_ground_mesh(10.0, Vec3::new(0.2, 0.5, 0.2));
+    serial_println!("Ground created: {} triangles", _ground.triangle_count());
 
     // Camera setup
     let aspect = fb_width as f32 / fb_height as f32;
-    let projection = perspective(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+    // 60 degrees in radians = 60 * PI / 180 = PI/3 ≈ 1.0472
+    let fov_radians = core::f32::consts::PI / 3.0;
+    let projection = perspective(fov_radians, aspect, 0.1, 1000.0);
+
+    serial_println!("Entering main loop...");
 
     loop {
-        tick();
-        let current_ticks = get_ticks();
-
         // Poll keyboard
         game::input::poll_keyboard();
 
         // Check for escape to quit
         if game::input::escape_pressed() {
             serial_println!("Escape pressed, shutting down...");
-            smp::scheduler::shutdown();
             break;
         }
 
-        // Update game world (20Hz)
-        if frame_count % 3 == 0 {
-            // ~20Hz at 60fps
+        // Update game world (every 5 frames ~= 2Hz at 10 FPS)
+        if frame_count % 5 == 0 {
             if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
-                world.update(1.0 / 20.0);
+                world.update(0.5);
             }
-
-            // Process network
-            net::protocol::process_incoming();
-            net::protocol::broadcast_world_state();
         }
-
-        // Poll network stack
-        net::stack::poll(current_ticks as i64);
 
         // Clear framebuffer and z-buffer
         if let Some(fb) = FRAMEBUFFER.lock().as_ref() {
@@ -211,27 +210,21 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         );
         let view = look_at(camera_pos, Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
 
-        // Render ground
-        let ground_model = Mat4::IDENTITY;
-        render_mesh(&ground, &ground_model, &view, &projection, fb_width, fb_height);
+        // Skip ground for now - too slow with current rasterizer
+        // let ground_model = Mat4::IDENTITY;
+        // render_mesh(&ground, &ground_model, &view, &projection, fb_width, fb_height);
 
-        // Render spinning cube
+        // Render spinning cube only
         let cube_model = Mat4::from_rotation_y(rotation) * Mat4::from_rotation_x(rotation * 0.7);
         render_mesh(&cube, &cube_model, &view, &projection, fb_width, fb_height);
 
-        // Render players
-        render_players(&view, &projection, fb_width, fb_height);
-
-        // Update FPS counter
-        frame_count += 1;
-        if current_ticks - last_fps_time >= 1000 {
-            fps = frame_count;
-            frame_count = 0;
-            last_fps_time = current_ticks;
-            serial_println!("FPS: {}", fps);
+        // Print FPS every 100 frames
+        frame_count = frame_count.wrapping_add(1);
+        if frame_count % 100 == 0 {
+            serial_println!("Frame {}", frame_count);
         }
 
-        smp::scheduler::next_frame();
+        // smp::scheduler::next_frame();  // SMP disabled
     }
 
     halt_loop();

@@ -61,9 +61,12 @@ impl E1000 {
         serial_println!("E1000: Starting initialization...");
 
         // Reset the device
+        serial_println!("E1000: Resetting device...");
         self.reset();
+        serial_println!("E1000: Reset complete");
 
         // Read MAC address from EEPROM
+        serial_println!("E1000: Reading MAC address...");
         self.read_mac_address();
         serial_println!(
             "E1000: MAC address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -76,10 +79,14 @@ impl E1000 {
         );
 
         // Initialize RX ring
+        serial_println!("E1000: Initializing RX ring...");
         self.init_rx()?;
+        serial_println!("E1000: RX ring initialized");
 
         // Initialize TX ring
+        serial_println!("E1000: Initializing TX ring...");
         self.init_tx()?;
+        serial_println!("E1000: TX ring initialized");
 
         // Enable interrupts (optional for polling mode)
         self.write_reg(REG_IMC, 0xFFFFFFFF); // Disable all interrupts
