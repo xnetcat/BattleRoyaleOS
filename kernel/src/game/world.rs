@@ -3,6 +3,7 @@
 use super::building::BuildPiece;
 use super::bus::BattleBus;
 use super::player::{Player, MAX_PLAYERS};
+use super::state::PlayerPhase;
 use super::storm::Storm;
 use alloc::vec::Vec;
 use glam::Vec3;
@@ -47,7 +48,7 @@ impl GameWorld {
 
         // Start on the bus
         player.position = self.bus.position;
-        player.in_bus = true;
+        player.phase = PlayerPhase::OnBus;
 
         self.players.push(player);
         self.changed_players.push(id);
@@ -61,7 +62,7 @@ impl GameWorld {
             player.apply_input(input, 1.0 / 20.0); // 20 Hz server tick
 
             // Check for building
-            if input.build && player.materials >= 10 {
+            if input.build && player.inventory.materials.wood >= 10 {
                 self.try_build(player_id);
             }
 
@@ -72,7 +73,8 @@ impl GameWorld {
     /// Try to place a building piece
     fn try_build(&mut self, player_id: u8) {
         let player = &mut self.players[player_id as usize];
-        if player.materials < 10 {
+        // Check if player has enough wood to build
+        if player.inventory.materials.wood < 10 {
             return;
         }
 
@@ -81,7 +83,7 @@ impl GameWorld {
 
         let piece = BuildPiece::wall(build_pos, player.yaw);
         self.buildings.push(piece);
-        player.materials -= 10;
+        player.inventory.materials.wood -= 10;
     }
 
     /// Update the world (server tick)
@@ -94,7 +96,7 @@ impl GameWorld {
 
             // Move players still on bus
             for player in &mut self.players {
-                if player.in_bus {
+                if player.phase == PlayerPhase::OnBus {
                     player.position = self.bus.position;
                 }
             }
@@ -104,9 +106,9 @@ impl GameWorld {
         for player in &mut self.players {
             player.update(dt);
 
-            // Storm damage
+            // Storm damage (no attacker)
             if player.is_alive() && !self.storm.contains(player.position) {
-                player.take_damage(self.storm.damage_per_tick());
+                player.take_damage(self.storm.damage_per_tick(), None);
             }
         }
 
@@ -173,7 +175,7 @@ impl GameWorld {
             player.yaw = state.yaw_radians();
             player.pitch = state.pitch_radians();
             player.health = state.health;
-            player.weapon_id = state.weapon_id;
+            player.set_network_weapon(state.weapon_id);
             player.flags = state.state;
         }
     }

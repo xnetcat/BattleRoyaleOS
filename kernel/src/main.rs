@@ -15,6 +15,7 @@ mod graphics;
 mod memory;
 mod net;
 mod smp;
+mod ui;
 
 use boot::{BASE_REVISION, HHDM_REQUEST, MEMORY_MAP_REQUEST};
 use core::panic::PanicInfo;
@@ -28,6 +29,7 @@ use graphics::{
     zbuffer,
 };
 use renderer::mesh;
+use game::state::{GameState, PlayerPhase, get_state, set_state, MenuAction};
 
 /// Read the CPU timestamp counter
 #[inline]
@@ -184,17 +186,6 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         terrain.triangle_count(), player_mesh.triangle_count(),
         wall_mesh.triangle_count(), bus_mesh.triangle_count());
 
-    // Add local player to game world
-    let local_player_id = {
-        let mut world = game::world::GAME_WORLD.lock();
-        if let Some(w) = world.as_mut() {
-            w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
-        } else {
-            None
-        }
-    };
-    serial_println!("Local player ID: {:?}", local_player_id);
-
     // Camera setup
     let aspect = fb_width as f32 / fb_height as f32;
     let fov_radians = core::f32::consts::PI / 3.0;
@@ -202,189 +193,192 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
 
     serial_println!("Parallel rendering: 4 cores active");
 
-    // Player rotation (controlled by A/D since no mouse)
+    // Menu state
+    let mut main_menu = ui::main_menu::MainMenuScreen::new(fb_width, fb_height);
+    let mut settings_screen = ui::settings::SettingsScreen::new(fb_width, fb_height);
+    let mut customization_screen = ui::customization::CustomizationScreen::new(fb_width, fb_height);
+    let mut lobby_screen = ui::lobby::LobbyScreen::new(fb_width, fb_height);
+
+    // Previous key state for edge detection
+    let mut prev_key_state = game::input::KeyState::default();
+
+    // Local player tracking
+    let mut local_player_id: Option<u8> = None;
     let mut player_yaw: f32 = 0.0;
     let mut input_sequence: u32 = 0;
+
+    // Countdown timer
+    let mut countdown_timer = 0.0f32;
 
     loop {
         // Poll keyboard
         game::input::poll_keyboard();
+        let key_state = game::input::KEY_STATE.lock().clone();
 
-        // Check for escape to quit
-        if game::input::escape_pressed() {
-            serial_println!("Escape pressed, shutting down...");
-            break;
-        }
+        // Get menu action from key state (edge-triggered)
+        let menu_action = get_menu_action(&key_state, &prev_key_state);
+        prev_key_state = key_state.clone();
 
-        // Apply keyboard input to local player
-        if let Some(id) = local_player_id {
-            let key_state = game::input::KEY_STATE.lock().clone();
+        // Handle game state
+        let current_state = get_state();
 
-            // Update player rotation with A/D keys
-            if key_state.a {
-                player_yaw -= 0.05;
-            }
-            if key_state.d {
-                player_yaw += 0.05;
-            }
-
-            // Create input from keyboard state
-            input_sequence += 1;
-            let input = protocol::packets::ClientInput {
-                player_id: id,
-                sequence: input_sequence,
-                forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
-                strafe: 0, // A/D used for rotation instead
-                jump: key_state.space,
-                crouch: key_state.ctrl,
-                fire: key_state.shift,
-                build: key_state.b,
-                exit_bus: key_state.space,
-                yaw: (player_yaw.to_degrees() * 100.0) as i16,
-                pitch: 0,
-            };
-
-            // Apply input to game world
-            if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
-                world.apply_input(id, &input);
-            }
-        }
-
-        // Update game world physics
-        if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
-            world.update(1.0 / 60.0);
-        }
-
-        // Process network (less frequently)
-        if frame_count % 10 == 0 {
-            net::protocol::process_incoming();
-            net::protocol::broadcast_world_state();
-        }
-
-        // Poll network stack every frame
-        net::stack::poll(frame_count as i64);
-
-        // Acquire render context for this frame
-        let render_ctx = match rasterizer::RenderContext::acquire() {
-            Some(ctx) => ctx,
-            None => continue,
-        };
-
-        // Clear back buffer and z-buffer (double buffering prevents flicker)
-        render_ctx.clear(rgb(30, 30, 50));
-        render_ctx.clear_zbuffer();
-
-        // Get camera position from local player (or default orbit)
-        rotation += 0.01;
-        let (camera_pos, camera_target) = {
-            let world = game::world::GAME_WORLD.lock();
-            if let (Some(w), Some(id)) = (world.as_ref(), local_player_id) {
-                if let Some(player) = w.get_player(id) {
-                    // Third-person camera behind player
-                    let cam_offset = Vec3::new(
-                        -libm::sinf(player.yaw) * 5.0,
-                        3.0,
-                        -libm::cosf(player.yaw) * 5.0,
-                    );
-                    let pos = player.position + cam_offset;
-                    let target = player.position + Vec3::new(0.0, 1.0, 0.0);
-                    (pos, target)
-                } else {
-                    // Default orbit camera
-                    let dist = 20.0;
-                    (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
-                }
-            } else {
-                let dist = 20.0;
-                (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
-            }
-        };
-        let view = look_at(camera_pos, camera_target, Vec3::Y);
-
-        // === PARALLEL RENDERING (4 cores) ===
-
-        // 1. Clear lock-free bins and reset triangle buffer
-        tiles::clear_lockfree_bins();
-        tiles::reset_triangle_buffer();
-
-        // 2. Transform and bin terrain
-        let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
-        bin_mesh(&terrain, &terrain_model, &view, &projection, fb_width as f32, fb_height as f32);
-
-        // 3. Render game world entities
-        {
-            let world = game::world::GAME_WORLD.lock();
-            if let Some(w) = world.as_ref() {
-                // Render battle bus if active
-                if w.bus.active {
-                    let bus_model = Mat4::from_translation(w.bus.position);
-                    bin_mesh(&bus_mesh, &bus_model, &view, &projection, fb_width as f32, fb_height as f32);
+        match current_state {
+            GameState::MainMenu => {
+                // Update main menu
+                if let Some(new_state) = main_menu.update(menu_action) {
+                    set_state(new_state);
                 }
 
-                // Render all players
-                for player in &w.players {
-                    if !player.is_alive() || player.in_bus {
-                        continue;
+                // Render main menu
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    main_menu.draw(ctx, fb_width, fb_height);
+                });
+            }
+
+            GameState::Settings => {
+                // Update settings screen
+                if let Some(new_state) = settings_screen.update(menu_action) {
+                    set_state(new_state);
+                }
+
+                // Render settings
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    settings_screen.draw(ctx, fb_width, fb_height);
+                });
+            }
+
+            GameState::Customization => {
+                // Update customization screen
+                if let Some(new_state) = customization_screen.update(menu_action) {
+                    set_state(new_state);
+                }
+
+                // Render customization with 3D preview
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    customization_screen.draw(ctx, fb_width, fb_height, rotation);
+                });
+                rotation += 0.02;
+            }
+
+            GameState::Lobby => {
+                // Update lobby screen
+                if let Some(new_state) = lobby_screen.update(menu_action) {
+                    set_state(new_state);
+
+                    // If starting countdown, initialize game world
+                    if matches!(new_state, GameState::Countdown { .. }) {
+                        countdown_timer = 5.0;
+                        game::world::init(true);
+
+                        // Add local player
+                        local_player_id = {
+                            let mut world = game::world::GAME_WORLD.lock();
+                            if let Some(w) = world.as_mut() {
+                                w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
+                            } else {
+                                None
+                            }
+                        };
                     }
-                    let model = Mat4::from_translation(player.position)
-                        * Mat4::from_rotation_y(player.yaw);
-                    bin_mesh(&player_mesh, &model, &view, &projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render buildings
-                for building in &w.buildings {
-                    let model = Mat4::from_translation(building.position)
-                        * Mat4::from_rotation_y(building.rotation);
-                    bin_mesh(&wall_mesh, &model, &view, &projection, fb_width as f32, fb_height as f32);
-                }
+                // Render lobby
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    lobby_screen.draw(ctx, fb_width, fb_height);
+                });
             }
-        }
 
-        // 3. Reset tile work queue
-        tiles::reset();
+            GameState::Countdown { remaining_secs } => {
+                countdown_timer -= 1.0 / 60.0;
 
-        // 4. Signal worker cores (1-3) to start rendering
-        smp::scheduler::start_render();
-
-        // 5. Core 0 also helps rasterize tiles
-        render_worker(0);
-
-        // 6. Wait for all cores (0-3) to finish at the barrier
-        smp::sync::RENDER_BARRIER.wait();
-
-        // 7. Signal render complete (allows worker cores to wait for next frame)
-        smp::scheduler::end_render();
-
-        // Drop render context before drawing FPS (font uses its own lock)
-        drop(render_ctx);
-
-        // Draw FPS counter
-        font::draw_fps(current_fps, fb_width);
-
-        // Draw game HUD (health, materials, alive count)
-        {
-            let world_guard = game::world::GAME_WORLD.lock();
-            if let Some(world) = world_guard.as_ref() {
-                let (health, materials) = if let Some(id) = local_player_id {
-                    if let Some(player) = world.get_player(id) {
-                        (player.health, player.materials)
-                    } else {
-                        (100, 0)
-                    }
+                if countdown_timer <= 0.0 {
+                    set_state(GameState::BusPhase);
                 } else {
-                    (100, 0)
-                };
-                let alive = world.players.iter().filter(|p| p.health > 0).count();
-                let total = world.players.len();
-                font::draw_hud(health, materials, alive, total, fb_width, fb_height);
-            }
-        }
+                    let new_secs = libm::ceilf(countdown_timer) as u8;
+                    if new_secs != remaining_secs {
+                        set_state(GameState::Countdown { remaining_secs: new_secs });
+                    }
+                }
 
-        // Present: copy back buffer to display
-        {
-            let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
-            if let Some(fb) = fb_guard.as_ref() {
-                fb.present();
+                // Render countdown
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    ui::game_ui::draw_countdown(ctx, fb_width, fb_height, remaining_secs);
+                });
+            }
+
+            GameState::BusPhase | GameState::InGame => {
+                // Check for escape to return to menu
+                if menu_action == MenuAction::Back {
+                    set_state(GameState::MainMenu);
+                    continue;
+                }
+
+                // Apply keyboard input to local player
+                if let Some(id) = local_player_id {
+                    // Update player rotation with A/D keys
+                    if key_state.a {
+                        player_yaw -= 0.05;
+                    }
+                    if key_state.d {
+                        player_yaw += 0.05;
+                    }
+
+                    // Create input from keyboard state
+                    input_sequence += 1;
+                    let input = protocol::packets::ClientInput {
+                        player_id: id,
+                        sequence: input_sequence,
+                        forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
+                        strafe: 0, // A/D used for rotation instead
+                        jump: key_state.space,
+                        crouch: key_state.ctrl,
+                        fire: key_state.shift,
+                        build: key_state.b,
+                        exit_bus: key_state.space,
+                        yaw: (player_yaw.to_degrees() * 100.0) as i16,
+                        pitch: 0,
+                    };
+
+                    // Apply input to game world
+                    if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                        world.apply_input(id, &input);
+                    }
+                }
+
+                // Update game world physics
+                if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                    world.update(1.0 / 60.0);
+                }
+
+                // Process network (less frequently)
+                if frame_count % 10 == 0 {
+                    net::protocol::process_incoming();
+                    net::protocol::broadcast_world_state();
+                }
+
+                // Poll network stack every frame
+                net::stack::poll(frame_count as i64);
+
+                // Render game world
+                render_game_frame(
+                    fb_width, fb_height,
+                    &terrain, &player_mesh, &wall_mesh, &bus_mesh,
+                    &projection, local_player_id, rotation,
+                    current_fps,
+                );
+                rotation += 0.01;
+            }
+
+            GameState::Victory { winner_id } => {
+                // Check for any key to return to menu
+                if menu_action == MenuAction::Select || menu_action == MenuAction::Back {
+                    set_state(GameState::MainMenu);
+                }
+
+                // Render victory screen
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    ui::game_ui::draw_victory(ctx, fb_width, fb_height, winner_id);
+                });
             }
         }
 
@@ -413,6 +407,196 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     }
 
     halt_loop();
+}
+
+/// Get menu action from key state (edge-triggered)
+fn get_menu_action(current: &game::input::KeyState, prev: &game::input::KeyState) -> MenuAction {
+    // Edge detection - only trigger on key press, not hold
+    if current.w && !prev.w || current.up && !prev.up {
+        return MenuAction::Up;
+    }
+    if current.s && !prev.s || current.down && !prev.down {
+        return MenuAction::Down;
+    }
+    if current.a && !prev.a || current.left && !prev.left {
+        return MenuAction::Left;
+    }
+    if current.d && !prev.d || current.right && !prev.right {
+        return MenuAction::Right;
+    }
+    if current.enter && !prev.enter || current.space && !prev.space {
+        return MenuAction::Select;
+    }
+    if current.escape && !prev.escape {
+        return MenuAction::Back;
+    }
+    MenuAction::None
+}
+
+/// Render a menu frame (2D UI only)
+fn render_menu_frame<F>(fb_width: usize, fb_height: usize, draw_fn: F)
+where
+    F: FnOnce(&rasterizer::RenderContext),
+{
+    // Acquire render context
+    let render_ctx = match rasterizer::RenderContext::acquire() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+
+    // Clear to dark background
+    render_ctx.clear(rgb(20, 25, 40));
+
+    // Draw menu content
+    draw_fn(&render_ctx);
+
+    // Drop context
+    drop(render_ctx);
+
+    // Present
+    {
+        let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+        if let Some(fb) = fb_guard.as_ref() {
+            fb.present();
+        }
+    }
+}
+
+/// Render a game frame (3D world + HUD)
+fn render_game_frame(
+    fb_width: usize,
+    fb_height: usize,
+    terrain: &mesh::Mesh,
+    player_mesh: &mesh::Mesh,
+    wall_mesh: &mesh::Mesh,
+    bus_mesh: &mesh::Mesh,
+    projection: &Mat4,
+    local_player_id: Option<u8>,
+    rotation: f32,
+    current_fps: u32,
+) {
+    // Acquire render context for this frame
+    let render_ctx = match rasterizer::RenderContext::acquire() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+
+    // Clear back buffer and z-buffer (double buffering prevents flicker)
+    render_ctx.clear(rgb(30, 30, 50));
+    render_ctx.clear_zbuffer();
+
+    // Get camera position from local player (or default orbit)
+    let (camera_pos, camera_target) = {
+        let world = game::world::GAME_WORLD.lock();
+        if let (Some(w), Some(id)) = (world.as_ref(), local_player_id) {
+            if let Some(player) = w.get_player(id) {
+                // Third-person camera behind player
+                let cam_offset = Vec3::new(
+                    -libm::sinf(player.yaw) * 5.0,
+                    3.0,
+                    -libm::cosf(player.yaw) * 5.0,
+                );
+                let pos = player.position + cam_offset;
+                let target = player.position + Vec3::new(0.0, 1.0, 0.0);
+                (pos, target)
+            } else {
+                // Default orbit camera
+                let dist = 20.0;
+                (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+            }
+        } else {
+            let dist = 20.0;
+            (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+        }
+    };
+    let view = look_at(camera_pos, camera_target, Vec3::Y);
+
+    // === PARALLEL RENDERING (4 cores) ===
+
+    // 1. Clear lock-free bins and reset triangle buffer
+    tiles::clear_lockfree_bins();
+    tiles::reset_triangle_buffer();
+
+    // 2. Transform and bin terrain
+    let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
+    bin_mesh(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
+
+    // 3. Render game world entities
+    {
+        let world = game::world::GAME_WORLD.lock();
+        if let Some(w) = world.as_ref() {
+            // Render battle bus if active
+            if w.bus.active {
+                let bus_model = Mat4::from_translation(w.bus.position);
+                bin_mesh(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
+            }
+
+            // Render all players
+            for player in &w.players {
+                if !player.is_alive() || player.phase == PlayerPhase::OnBus {
+                    continue;
+                }
+                let model = Mat4::from_translation(player.position)
+                    * Mat4::from_rotation_y(player.yaw);
+                bin_mesh(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+            }
+
+            // Render buildings
+            for building in &w.buildings {
+                let model = Mat4::from_translation(building.position)
+                    * Mat4::from_rotation_y(building.rotation);
+                bin_mesh(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+            }
+        }
+    }
+
+    // 3. Reset tile work queue
+    tiles::reset();
+
+    // 4. Signal worker cores (1-3) to start rendering
+    smp::scheduler::start_render();
+
+    // 5. Core 0 also helps rasterize tiles
+    render_worker(0);
+
+    // 6. Wait for all cores (0-3) to finish at the barrier
+    smp::sync::RENDER_BARRIER.wait();
+
+    // 7. Signal render complete (allows worker cores to wait for next frame)
+    smp::scheduler::end_render();
+
+    // Drop render context before drawing FPS (font uses its own lock)
+    drop(render_ctx);
+
+    // Draw FPS counter
+    font::draw_fps(current_fps, fb_width);
+
+    // Draw game HUD (health, materials, alive count)
+    {
+        let world_guard = game::world::GAME_WORLD.lock();
+        if let Some(world) = world_guard.as_ref() {
+            let (health, shield, _materials) = if let Some(id) = local_player_id {
+                if let Some(player) = world.get_player(id) {
+                    (player.health, player.shield, player.inventory.materials.total())
+                } else {
+                    (100, 0, 0)
+                }
+            } else {
+                (100, 0, 0)
+            };
+            let alive = world.players.iter().filter(|p| p.health > 0).count();
+            let total = world.players.len();
+            font::draw_hud(health, shield as u32, alive, total, fb_width, fb_height);
+        }
+    }
+
+    // Present: copy back buffer to display
+    {
+        let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+        if let Some(fb) = fb_guard.as_ref() {
+            fb.present();
+        }
+    }
 }
 
 /// Transform mesh triangles, create ScreenTriangles, and bin them to tiles

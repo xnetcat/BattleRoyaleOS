@@ -1,10 +1,13 @@
-//! Simple 8x8 bitmap font for text rendering
+//! Extended 8x8 bitmap font for text rendering
+//!
+//! Supports full alphabet (A-Z), digits (0-9), and common punctuation.
 
 use super::framebuffer::FRAMEBUFFER;
 
-/// 8x8 bitmap font data for digits and letters
+/// 8x8 bitmap font data for digits, letters, and punctuation
 /// Each character is 8 bytes, one byte per row
-static FONT_DATA: [[u8; 8]; 32] = [
+/// Total: 48 glyphs
+static FONT_DATA: [[u8; 8]; 48] = [
     // 0
     [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
     // 1
@@ -27,48 +30,80 @@ static FONT_DATA: [[u8; 8]; 32] = [
     [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x0C, 0x38, 0x00],
     // A (10)
     [0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00],
-    // E (11)
-    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00],
-    // F (12)
-    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // H (13)
-    [0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
-    // I (14)
-    [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
-    // L (15)
-    [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00],
-    // M (16)
-    [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
-    // P (17)
-    [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
-    // S (18)
-    [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00],
-    // T (19)
-    [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
-    // V (20)
-    [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
-    // : (21)
-    [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
-    // space (22)
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-    // . (23)
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
-    // / (24)
-    [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
-    // R (25)
-    [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
-    // O (26)
-    [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
-    // N (27)
-    [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00],
-    // D (28)
-    [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
-    // B (29)
+    // B (11)
     [0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00],
+    // C (12)
+    [0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00],
+    // D (13)
+    [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
+    // E (14)
+    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00],
+    // F (15)
+    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
+    // G (16)
+    [0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3E, 0x00],
+    // H (17)
+    [0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+    // I (18)
+    [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
+    // J (19)
+    [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00],
+    // K (20)
+    [0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00],
+    // L (21)
+    [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00],
+    // M (22)
+    [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
+    // N (23)
+    [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00],
+    // O (24)
+    [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+    // P (25)
+    [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
+    // Q (26)
+    [0x3C, 0x66, 0x66, 0x66, 0x6A, 0x6C, 0x36, 0x00],
+    // R (27)
+    [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
+    // S (28)
+    [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00],
+    // T (29)
+    [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
     // U (30)
     [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
-    // X (31) - unused padding
+    // V (31)
+    [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
+    // W (32)
+    [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00],
+    // X (33)
     [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00],
+    // Y (34)
+    [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00],
+    // Z (35)
+    [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00],
+    // : (36)
+    [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
+    // space (37)
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    // . (38)
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
+    // / (39)
+    [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
+    // - (40)
+    [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
+    // _ (41)
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00],
+    // ! (42)
+    [0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x00],
+    // ? (43)
+    [0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00],
+    // ( (44)
+    [0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00],
+    // ) (45)
+    [0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00],
+    // # (46)
+    [0x24, 0x24, 0x7E, 0x24, 0x7E, 0x24, 0x24, 0x00],
+    // > (47)
+    [0x30, 0x18, 0x0C, 0x06, 0x0C, 0x18, 0x30, 0x00],
 ];
 
 /// Get glyph index for a character
@@ -76,27 +111,44 @@ fn char_to_glyph(c: char) -> usize {
     match c {
         '0'..='9' => (c as usize) - ('0' as usize),
         'A' | 'a' => 10,
-        'E' | 'e' => 11,
-        'F' | 'f' => 12,
-        'H' | 'h' => 13,
-        'I' | 'i' => 14,
-        'L' | 'l' => 15,
-        'M' | 'm' => 16,
-        'P' | 'p' => 17,
-        'S' | 's' => 18,
-        'T' | 't' => 19,
-        'V' | 'v' => 20,
-        ':' => 21,
-        ' ' => 22,
-        '.' => 23,
-        '/' => 24,
-        'R' | 'r' => 25,
-        'O' | 'o' => 26,
-        'N' | 'n' => 27,
-        'D' | 'd' => 28,
-        'B' | 'b' => 29,
+        'B' | 'b' => 11,
+        'C' | 'c' => 12,
+        'D' | 'd' => 13,
+        'E' | 'e' => 14,
+        'F' | 'f' => 15,
+        'G' | 'g' => 16,
+        'H' | 'h' => 17,
+        'I' | 'i' => 18,
+        'J' | 'j' => 19,
+        'K' | 'k' => 20,
+        'L' | 'l' => 21,
+        'M' | 'm' => 22,
+        'N' | 'n' => 23,
+        'O' | 'o' => 24,
+        'P' | 'p' => 25,
+        'Q' | 'q' => 26,
+        'R' | 'r' => 27,
+        'S' | 's' => 28,
+        'T' | 't' => 29,
         'U' | 'u' => 30,
-        _ => 22, // Default to space
+        'V' | 'v' => 31,
+        'W' | 'w' => 32,
+        'X' | 'x' => 33,
+        'Y' | 'y' => 34,
+        'Z' | 'z' => 35,
+        ':' => 36,
+        ' ' => 37,
+        '.' => 38,
+        '/' => 39,
+        '-' => 40,
+        '_' => 41,
+        '!' => 42,
+        '?' => 43,
+        '(' => 44,
+        ')' => 45,
+        '#' => 46,
+        '>' => 47,
+        _ => 37, // Default to space
     }
 }
 
@@ -131,6 +183,31 @@ pub fn draw_char(x: usize, y: usize, c: char, color: u32, scale: usize) {
     }
 }
 
+/// Draw a character without holding the framebuffer lock (for batch drawing)
+/// Caller must ensure fb is valid
+pub fn draw_char_raw(fb: &super::framebuffer::Framebuffer, x: usize, y: usize, c: char, color: u32, scale: usize) {
+    let glyph = char_to_glyph(c);
+    let data = &FONT_DATA[glyph];
+
+    for row in 0..8 {
+        let bits = data[row];
+        for col in 0..8 {
+            if bits & (0x80 >> col) != 0 {
+                // Draw scaled pixel
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let px = x + col * scale + sx;
+                        let py = y + row * scale + sy;
+                        if px < fb.width && py < fb.height {
+                            fb.put_pixel(px, py, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Draw a string at position (x, y)
 pub fn draw_string(x: usize, y: usize, s: &str, color: u32, scale: usize) {
     let mut cx = x;
@@ -138,6 +215,51 @@ pub fn draw_string(x: usize, y: usize, s: &str, color: u32, scale: usize) {
         draw_char(cx, y, c, color, scale);
         cx += 8 * scale + scale; // Character width + spacing
     }
+}
+
+/// Draw a string without holding the framebuffer lock (for batch drawing)
+pub fn draw_string_raw(fb: &super::framebuffer::Framebuffer, x: usize, y: usize, s: &str, color: u32, scale: usize) {
+    let mut cx = x;
+    for c in s.chars() {
+        draw_char_raw(fb, cx, y, c, color, scale);
+        cx += 8 * scale + scale; // Character width + spacing
+    }
+}
+
+/// Get the pixel width of a string at a given scale
+pub fn string_width(s: &str, scale: usize) -> usize {
+    if s.is_empty() {
+        return 0;
+    }
+    let char_count = s.chars().count();
+    char_count * (8 * scale) + (char_count - 1) * scale
+}
+
+/// Get the pixel height at a given scale
+pub fn char_height(scale: usize) -> usize {
+    8 * scale
+}
+
+/// Draw a centered string
+pub fn draw_string_centered(y: usize, s: &str, color: u32, scale: usize, fb_width: usize) {
+    let text_width = string_width(s, scale);
+    let x = if text_width >= fb_width {
+        0
+    } else {
+        (fb_width - text_width) / 2
+    };
+    draw_string(x, y, s, color, scale);
+}
+
+/// Draw a centered string without holding the framebuffer lock
+pub fn draw_string_centered_raw(fb: &super::framebuffer::Framebuffer, y: usize, s: &str, color: u32, scale: usize) {
+    let text_width = string_width(s, scale);
+    let x = if text_width >= fb.width {
+        0
+    } else {
+        (fb.width - text_width) / 2
+    };
+    draw_string_raw(fb, x, y, s, color, scale);
 }
 
 /// Draw FPS counter in top-left corner with solid background
@@ -260,7 +382,7 @@ fn format_stat<'a>(label: &str, value: u32, buf: &'a mut [u8; 16]) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
-/// Format alive count like "ALIVE: 50/100"
+/// Format alive count like "50/100"
 fn format_alive<'a>(alive: usize, total: usize, buf: &'a mut [u8; 16]) -> &'a str {
     let mut pos = 0;
 
@@ -335,4 +457,27 @@ fn format_fps(fps: u32, buf: &mut [u8; 12]) -> &str {
 
     // Safety: we only write ASCII characters
     unsafe { core::str::from_utf8_unchecked(&buf[..len]) }
+}
+
+/// Format a number into a buffer, returns the slice used
+pub fn format_number(value: u32, buf: &mut [u8]) -> &str {
+    if buf.is_empty() {
+        return "";
+    }
+
+    if value == 0 {
+        buf[0] = b'0';
+        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
+    }
+
+    let mut n = value;
+    let mut pos = 0;
+    while n > 0 && pos < buf.len() {
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        pos += 1;
+    }
+    buf[..pos].reverse();
+
+    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
