@@ -58,12 +58,10 @@ impl E1000 {
 
     /// Initialize the E1000 device
     pub fn init(&mut self) -> Result<(), &'static str> {
-        serial_println!("E1000: Starting initialization...");
+        serial_println!("E1000: Initializing at MMIO {:#x}", self.mmio_base);
 
         // Reset the device
-        serial_println!("E1000: Resetting device...");
         self.reset();
-        serial_println!("E1000: Reset complete");
 
         // Read MAC address from EEPROM
         serial_println!("E1000: Reading MAC address...");
@@ -88,9 +86,10 @@ impl E1000 {
         self.init_tx()?;
         serial_println!("E1000: TX ring initialized");
 
-        // Enable interrupts (optional for polling mode)
-        self.write_reg(REG_IMC, 0xFFFFFFFF); // Disable all interrupts
-        self.write_reg(REG_IMS, 0); // We'll use polling
+        // Enable RX interrupts (some E1000 implementations need this even for polling)
+        self.write_reg(REG_IMC, 0xFFFFFFFF); // Clear all interrupt causes
+        // Enable RX-related interrupts
+        self.write_reg(REG_IMS, 0x000000FF); // Enable RX interrupts (RXDMT0, RXO, RXT0, etc.)
 
         // Set link up
         let ctrl = self.read_reg(REG_CTRL);
@@ -118,9 +117,20 @@ impl E1000 {
         // Set the reset bit
         self.write_reg(REG_CTRL, CTRL_RST);
 
-        // Wait for reset to complete
-        for _ in 0..1000 {
+        // Wait for reset to complete (~10ms)
+        for _ in 0..200000 {
             core::hint::spin_loop();
+        }
+
+        // Wait for reset bit to clear
+        for _ in 0..1000 {
+            let ctrl = self.read_reg(REG_CTRL);
+            if ctrl & CTRL_RST == 0 {
+                break;
+            }
+            for _ in 0..100 {
+                core::hint::spin_loop();
+            }
         }
 
         // Disable interrupts after reset
@@ -145,32 +155,35 @@ impl E1000 {
     fn init_rx(&mut self) -> Result<(), &'static str> {
         self.rx_ring.init()?;
 
+        // Disable receiver during setup
+        self.write_reg(REG_RCTL, 0);
+
         // Set RX descriptor base address
         let rx_desc_phys = self.rx_ring.descriptor_phys_addr();
         self.write_reg(REG_RDBAL, rx_desc_phys as u32);
         self.write_reg(REG_RDBAH, (rx_desc_phys >> 32) as u32);
 
         // Set RX descriptor ring length
-        self.write_reg(
-            REG_RDLEN,
-            (RX_RING_SIZE * core::mem::size_of::<RxDescriptor>()) as u32,
-        );
+        let rdlen = (RX_RING_SIZE * core::mem::size_of::<RxDescriptor>()) as u32;
+        self.write_reg(REG_RDLEN, rdlen);
 
-        // Set head and tail pointers
+        // Set head pointer to 0
         self.write_reg(REG_RDH, 0);
-        self.write_reg(REG_RDT, (RX_RING_SIZE - 1) as u32);
 
-        // Configure RX control
-        self.write_reg(
-            REG_RCTL,
-            RCTL_EN |           // Enable receiver
-            RCTL_SBP |          // Store bad packets
+        // Configure RX control (but not enabled yet)
+        let rctl = RCTL_SBP |          // Store bad packets
             RCTL_UPE |          // Unicast promiscuous
             RCTL_MPE |          // Multicast promiscuous
             RCTL_BAM |          // Accept broadcast
             RCTL_BSIZE_2048 |   // Buffer size 2048
-            RCTL_SECRC, // Strip CRC
-        );
+            RCTL_SECRC;         // Strip CRC
+        self.write_reg(REG_RCTL, rctl);
+
+        // Set tail pointer - this makes descriptors available to hardware
+        self.write_reg(REG_RDT, (RX_RING_SIZE - 1) as u32);
+
+        // Now enable the receiver
+        self.write_reg(REG_RCTL, rctl | RCTL_EN);
 
         serial_println!("E1000: RX ring initialized");
         Ok(())
@@ -280,9 +293,11 @@ impl E1000 {
 
     /// Check if there's a packet ready to receive
     pub fn has_packet(&self) -> bool {
-        let tail = (self.read_reg(REG_RDT) as usize + 1) % RX_RING_SIZE;
-        let desc = self.rx_ring.get_descriptor(tail);
-        unsafe { (*desc).status & RX_STATUS_DD != 0 }
+        let rdt = self.read_reg(REG_RDT) as usize;
+        let next = (rdt + 1) % RX_RING_SIZE;
+        let desc = self.rx_ring.get_descriptor(next);
+        let status = unsafe { (*desc).status };
+        status & RX_STATUS_DD != 0
     }
 }
 

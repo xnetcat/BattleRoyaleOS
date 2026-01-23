@@ -21,9 +21,9 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 use glam::{Mat4, Vec3};
 use graphics::{
-    framebuffer::{rgb, FRAMEBUFFER},
+    framebuffer::rgb,
     pipeline::{look_at, perspective, transform_triangle},
-    rasterizer::rasterize_triangle_shaded,
+    rasterizer::{self, rasterize_triangle_shaded, rasterize_triangle_with_context},
     tiles,
     zbuffer,
 };
@@ -57,11 +57,13 @@ extern "C" fn _start() -> ! {
 
     // Get HHDM offset for physical memory access
     if let Some(hhdm) = HHDM_REQUEST.get_response() {
-        *memory::dma::HHDM_OFFSET.lock() = hhdm.offset();
-        serial_println!("HHDM offset: {:#x}", hhdm.offset());
+        let hhdm_offset = hhdm.offset();
+        *memory::dma::HHDM_OFFSET.lock() = hhdm_offset;
+        memory::paging::set_hhdm_offset(hhdm_offset);
+        serial_println!("HHDM offset: {:#x}", hhdm_offset);
     }
 
-    // Print memory map info
+    // Print memory map info and initialize DMA pool
     if let Some(memmap) = MEMORY_MAP_REQUEST.get_response() {
         let entries = memmap.entries();
         serial_println!("Memory map: {} entries", entries.len());
@@ -73,6 +75,10 @@ extern "C" fn _start() -> ! {
             }
         }
         serial_println!("Usable memory: {} MB", usable_memory / 1024 / 1024);
+
+        // Initialize DMA pool from memory map
+        let hhdm_offset = *memory::dma::HHDM_OFFSET.lock();
+        memory::dma::init_dma_pool(entries, hhdm_offset);
     }
 
     // Initialize framebuffer
@@ -113,27 +119,31 @@ extern "C" fn _start() -> ! {
             e1000_dev.bar0
         );
 
-        // NOTE: Skipping E1000 init for now - DMA address translation
-        // doesn't work correctly with kernel heap memory.
-        // TODO: Implement proper DMA allocator using HHDM-mapped physical memory
-        serial_println!("E1000: Skipping init (DMA not implemented properly)");
+        // Enable PCI bus mastering and memory space access
+        e1000_dev.enable_bus_master();
+        e1000_dev.enable_memory_space();
 
-        // // Enable bus mastering
-        // e1000_dev.enable_bus_master();
-        // e1000_dev.enable_memory_space();
-        //
-        // // Get MMIO address (with HHDM offset)
-        // let hhdm_offset = *memory::dma::HHDM_OFFSET.lock();
-        // let mmio_base = e1000_dev.bar0_address() + hhdm_offset;
-        //
-        // // Initialize E1000 driver
-        // if let Err(e) = drivers::e1000::init(mmio_base) {
-        //     serial_println!("E1000 init failed: {}", e);
-        // } else {
-        //     serial_println!("E1000 initialized");
-        //     // Initialize network stack
-        //     net::stack::init();
-        // }
+        // Get BAR0 physical address
+        let bar0_phys = e1000_dev.bar0_address();
+
+        // Map MMIO region into kernel address space with proper caching attributes
+        // E1000 MMIO region is 128KB
+        let mmio_base = match memory::paging::map_mmio(bar0_phys, 0x20000) {
+            Some(virt) => virt,
+            None => {
+                serial_println!("E1000: Failed to map MMIO region");
+                halt_loop();
+            }
+        };
+
+        // Initialize E1000 driver
+        if let Err(e) = drivers::e1000::init(mmio_base) {
+            serial_println!("E1000 init failed: {}", e);
+        } else {
+            serial_println!("E1000 initialized successfully");
+            // Initialize network stack
+            net::stack::init();
+        }
     } else {
         serial_println!("E1000 not found");
     }
@@ -190,13 +200,24 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
             if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
                 world.update(0.5);
             }
+
+            // Process network packets
+            net::protocol::process_incoming();
+            net::protocol::broadcast_world_state();
         }
 
-        // Clear framebuffer and z-buffer
-        if let Some(fb) = FRAMEBUFFER.lock().as_ref() {
-            fb.clear(rgb(30, 30, 50)); // Dark blue-gray background
-        }
-        zbuffer::clear();
+        // Poll network stack every frame
+        net::stack::poll(frame_count as i64);
+
+        // Acquire render context for this frame (optimized - no locks during rendering)
+        let render_ctx = match rasterizer::RenderContext::acquire() {
+            Some(ctx) => ctx,
+            None => continue,
+        };
+
+        // Clear framebuffer and z-buffer using render context
+        render_ctx.clear(rgb(30, 30, 50)); // Dark blue-gray background
+        render_ctx.clear_zbuffer();
 
         // Update rotation for spinning cube
         rotation += 0.02;
@@ -210,17 +231,17 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         );
         let view = look_at(camera_pos, Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
 
-        // Skip ground for now - too slow with current rasterizer
-        // let ground_model = Mat4::IDENTITY;
-        // render_mesh(&ground, &ground_model, &view, &projection, fb_width, fb_height);
+        // Render ground
+        let ground_model = Mat4::IDENTITY;
+        render_mesh_with_ctx(&render_ctx, &_ground, &ground_model, &view, &projection, fb_width, fb_height);
 
-        // Render spinning cube only
+        // Render spinning cube
         let cube_model = Mat4::from_rotation_y(rotation) * Mat4::from_rotation_x(rotation * 0.7);
-        render_mesh(&cube, &cube_model, &view, &projection, fb_width, fb_height);
+        render_mesh_with_ctx(&render_ctx, &cube, &cube_model, &view, &projection, fb_width, fb_height);
 
-        // Print FPS every 100 frames
+        // Print FPS every 50 frames
         frame_count = frame_count.wrapping_add(1);
-        if frame_count % 100 == 0 {
+        if frame_count % 50 == 0 {
             serial_println!("Frame {}", frame_count);
         }
 
@@ -230,8 +251,9 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     halt_loop();
 }
 
-/// Render a mesh
-fn render_mesh(
+/// Render a mesh using a pre-acquired render context (optimized)
+fn render_mesh_with_ctx(
+    ctx: &rasterizer::RenderContext,
     mesh: &mesh::Mesh,
     model: &Mat4,
     view: &Mat4,
@@ -251,7 +273,7 @@ fn render_mesh(
                 fb_width as f32,
                 fb_height as f32,
             ) {
-                rasterize_triangle_shaded(&tv0, &tv1, &tv2);
+                rasterize_triangle_with_context(ctx, &tv0, &tv1, &tv2);
             }
         }
     }

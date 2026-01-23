@@ -124,6 +124,19 @@ pub fn init() {
         let mut stack = NetworkStack::new(mac, ip);
         stack.add_udp_socket(5000); // Game protocol port
 
+        // Send a test packet to trigger ARP resolution for gateway
+        let gateway = Ipv4Address::new(10, 0, 2, 2);
+        stack.send_udp(gateway, 1234, b"test");
+
+        // Poll to process ARP handshake
+        for i in 0..1000 {
+            stack.poll(i as i64);
+            // Small delay between polls
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+        }
+
         *NETWORK_STACK.lock() = Some(stack);
 
         serial_println!("NET: Stack initialized with IP 10.0.2.15");
