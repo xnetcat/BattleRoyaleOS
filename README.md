@@ -256,6 +256,8 @@ tail -f qemu.log
 **No network connectivity**
 - Ensure E1000 is detected in PCI scan
 - Check smoltcp features enabled in Cargo.toml
+- Verify ARP resolution works (poll network stack during init)
+- DMA memory must be above 16MB for reliable operation
 
 **Graphics not rendering**
 - Verify framebuffer response from Limine

@@ -4,7 +4,9 @@
 
 This document tracks the implementation status of BattleRoyaleOS, a bare-metal Rust unikernel designed to run a 100-player Battle Royale game on local network.
 
-**Current Status**: Phase 1-3 Core Complete, Phase 4-5 Scaffolded
+**Current Status**: Phase 1-3 Complete with Working Networking, Phase 4-5 Scaffolded
+
+**Latest Update**: E1000 TX/RX verified working with QEMU SLIRP networking. Rasterizer optimized.
 
 ---
 
@@ -91,22 +93,32 @@ struct RxDescriptor {
 - Gateway: 10.0.2.2
 - UDP Port: 5000
 
+#### Recent Fixes
+- [x] Fixed DMA allocator to use higher physical addresses (>16MB)
+- [x] Implemented MMIO paging module for E1000 register access
+- [x] Fixed E1000 RX initialization order (RCTL before RDT)
+- [x] Added ARP handshake during network initialization
+- [x] Verified packet transmission/reception with QEMU SLIRP
+
 #### TODO - Phase 2 Polish
 - [ ] Implement ICMP ping response for debugging
 - [ ] Add packet checksum validation
 - [ ] Implement link status monitoring
 - [ ] Add network statistics tracking
-- [ ] Test actual packet transmission/reception
 
 #### Verification
 ```bash
-# In one terminal:
+# Run the kernel:
 make run
-# Kernel should print "Link up" and IP address
 
-# In another terminal:
-ping -c 3 10.0.2.15
-# Should receive responses (requires ICMP implementation)
+# Expected output:
+# - E1000: Link up!
+# - NET: Stack initialized with IP 10.0.2.15
+# - ARP resolution works (verified via pcap dump)
+
+# To verify UDP with port forwarding:
+qemu-system-x86_64 ... -netdev user,id=net0,hostfwd=udp::15000-:5000
+# Then send UDP packets to localhost:15000
 ```
 
 ---
@@ -155,8 +167,13 @@ ping -c 3 10.0.2.15
 - L1 cache fit: 64×64×4 = 16KB per tile z-buffer
 - Work distribution: Atomic counter
 
+#### Recent Improvements
+- [x] Optimized rasterizer with RenderContext for direct memory access
+- [x] Removed spinlock per-triangle for better performance
+- [x] Added flat-shading variant for faster rendering
+
 #### TODO - Phase 3 Polish
-- [ ] Implement parallel tile rendering on cores 1-3
+- [ ] Implement parallel tile rendering on cores 1-3 (blocked by QEMU TCG performance)
 - [ ] Add texture mapping support
 - [ ] Implement simple lighting (directional)
 - [ ] Add fog for distance culling
