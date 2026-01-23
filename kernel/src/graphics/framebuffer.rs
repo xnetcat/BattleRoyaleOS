@@ -85,7 +85,7 @@ impl Framebuffer {
     /// Get raw pointer to a scanline
     #[inline]
     pub unsafe fn scanline_ptr(&self, y: usize) -> *mut u32 {
-        self.address.add(y * (self.pitch / 4))
+        unsafe { self.address.add(y * (self.pitch / 4)) }
     }
 
     /// Get total pixel count

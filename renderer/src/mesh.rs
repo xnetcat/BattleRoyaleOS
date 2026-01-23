@@ -41,38 +41,38 @@ impl Mesh {
     }
 }
 
-/// Create a unit cube centered at origin
-pub fn create_cube(color: Vec3) -> Mesh {
+/// Create a unit cube centered at origin with per-face shading
+pub fn create_cube(base_color: Vec3) -> Mesh {
     let mut mesh = Mesh::new();
 
     // Define vertices for each face with normals
     let positions = [
-        // Front face
+        // Front face (+Z)
         Vec3::new(-0.5, -0.5, 0.5),
         Vec3::new(0.5, -0.5, 0.5),
         Vec3::new(0.5, 0.5, 0.5),
         Vec3::new(-0.5, 0.5, 0.5),
-        // Back face
+        // Back face (-Z)
         Vec3::new(0.5, -0.5, -0.5),
         Vec3::new(-0.5, -0.5, -0.5),
         Vec3::new(-0.5, 0.5, -0.5),
         Vec3::new(0.5, 0.5, -0.5),
-        // Top face
+        // Top face (+Y)
         Vec3::new(-0.5, 0.5, 0.5),
         Vec3::new(0.5, 0.5, 0.5),
         Vec3::new(0.5, 0.5, -0.5),
         Vec3::new(-0.5, 0.5, -0.5),
-        // Bottom face
+        // Bottom face (-Y)
         Vec3::new(-0.5, -0.5, -0.5),
         Vec3::new(0.5, -0.5, -0.5),
         Vec3::new(0.5, -0.5, 0.5),
         Vec3::new(-0.5, -0.5, 0.5),
-        // Right face
+        // Right face (+X)
         Vec3::new(0.5, -0.5, 0.5),
         Vec3::new(0.5, -0.5, -0.5),
         Vec3::new(0.5, 0.5, -0.5),
         Vec3::new(0.5, 0.5, 0.5),
-        // Left face
+        // Left face (-X)
         Vec3::new(-0.5, -0.5, -0.5),
         Vec3::new(-0.5, -0.5, 0.5),
         Vec3::new(-0.5, 0.5, 0.5),
@@ -88,14 +88,24 @@ pub fn create_cube(color: Vec3) -> Mesh {
         Vec3::new(-1.0, 0.0, 0.0), // Left
     ];
 
-    // Create vertices
+    // Simple directional light from upper-right-front
+    let light_dir = Vec3::new(0.5, 0.7, 0.5).normalize();
+    let ambient = 0.3;
+
+    // Create vertices with per-face lighting
     for face in 0..6 {
+        // Calculate lighting for this face
+        let normal = normals[face];
+        let dot = normal.dot(light_dir).max(0.0);
+        let brightness = ambient + dot * (1.0 - ambient);
+        let face_color = base_color * brightness;
+
         for v in 0..4 {
             let idx = face * 4 + v;
             mesh.vertices.push(Vertex {
                 position: positions[idx],
                 normal: normals[face],
-                color,
+                color: face_color,
                 uv: Vec2::ZERO,
             });
         }

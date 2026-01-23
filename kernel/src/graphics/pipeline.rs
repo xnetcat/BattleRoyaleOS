@@ -28,7 +28,9 @@ pub fn transform_vertex(
     // Viewport transformation (NDC to screen coordinates)
     let screen_x = (ndc.x + 1.0) * 0.5 * viewport_width;
     let screen_y = (1.0 - ndc.y) * 0.5 * viewport_height; // Flip Y
-    let screen_z = (ndc.z + 1.0) * 0.5; // Depth to [0, 1]
+    // Use 1/w for depth (linear depth, better precision)
+    // Closer objects have larger 1/w values
+    let screen_z = 1.0 / w;
 
     Vertex {
         position: Vec3::new(screen_x, screen_y, screen_z),
@@ -64,13 +66,14 @@ pub fn transform_triangle(
         return None;
     }
 
-    // Backface culling using screen-space winding
+    // Backface culling using screen-space winding order
     let edge1 = tv1.position - tv0.position;
     let edge2 = tv2.position - tv0.position;
     let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
 
-    if cross_z >= 0.0 {
-        // Counter-clockwise in screen space = facing away
+    // In screen space with Y pointing down, front-facing triangles
+    // (CCW in world space) become CW, giving negative cross_z
+    if cross_z > 0.0 {
         return None;
     }
 

@@ -15,7 +15,7 @@ impl ZBuffer {
     /// Create a new z-buffer
     pub fn new(width: usize, height: usize) -> Self {
         Self {
-            data: vec![f32::INFINITY; width * height],
+            data: vec![f32::NEG_INFINITY; width * height],
             width,
             height,
         }
@@ -24,19 +24,20 @@ impl ZBuffer {
     /// Clear the z-buffer
     pub fn clear(&mut self) {
         for z in &mut self.data {
-            *z = f32::INFINITY;
+            *z = f32::NEG_INFINITY;
         }
     }
 
     /// Test and set depth at (x, y)
     /// Returns true if the new depth is closer (should draw)
+    /// Uses reversed depth: larger z = closer
     #[inline]
     pub fn test_and_set(&mut self, x: usize, y: usize, depth: f32) -> bool {
         if x >= self.width || y >= self.height {
             return false;
         }
         let idx = y * self.width + x;
-        if depth < self.data[idx] {
+        if depth > self.data[idx] {
             self.data[idx] = depth;
             true
         } else {

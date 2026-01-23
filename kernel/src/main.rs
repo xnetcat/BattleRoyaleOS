@@ -21,6 +21,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 use glam::{Mat4, Vec3};
 use graphics::{
+    font,
     framebuffer::rgb,
     pipeline::{look_at, perspective, transform_triangle},
     rasterizer::{self, rasterize_triangle_shaded, rasterize_triangle_with_context},
@@ -29,8 +30,16 @@ use graphics::{
 };
 use renderer::mesh;
 
-/// Simple timestamp counter for timing
+/// Simple timestamp counter for timing using TSC
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the CPU timestamp counter
+#[inline]
+fn read_tsc() -> u64 {
+    unsafe {
+        core::arch::x86_64::_rdtsc()
+    }
+}
 
 /// Get current tick count (approximate milliseconds)
 fn get_ticks() -> u64 {
@@ -153,8 +162,10 @@ extern "C" fn _start() -> ! {
     game::world::init(true); // Server mode
     serial_println!("Game world initialized");
 
-    // Skip SMP for now - run single-threaded for stability
-    serial_println!("SMP disabled for stability testing");
+    // Initialize SMP - start worker cores
+    serial_println!("Initializing SMP...");
+    smp::scheduler::init();
+    serial_println!("SMP initialized");
 
     serial_println!("Starting main loop...");
 
@@ -167,6 +178,13 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let mut frame_count = 0u32;
     let mut rotation = 0.0f32;
 
+    // FPS tracking
+    let mut last_fps_time = read_tsc();
+    let mut fps_frame_count = 0u32;
+    let mut current_fps = 0u32;
+    // Estimate TSC frequency (assume ~2GHz for QEMU)
+    let tsc_per_second: u64 = 2_000_000_000;
+
     serial_println!("Creating test meshes...");
 
     // Create a test cube
@@ -174,14 +192,15 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     serial_println!("Cube created: {} triangles", cube.triangle_count());
 
     // Create a small ground for testing (reduced from 100 to 10)
-    let _ground = mesh::create_ground_mesh(10.0, Vec3::new(0.2, 0.5, 0.2));
-    serial_println!("Ground created: {} triangles", _ground.triangle_count());
+    let ground = mesh::create_ground_mesh(10.0, Vec3::new(0.2, 0.5, 0.2));
+    serial_println!("Ground created: {} triangles", ground.triangle_count());
 
     // Camera setup
     let aspect = fb_width as f32 / fb_height as f32;
     // 60 degrees in radians = 60 * PI / 180 = PI/3 ≈ 1.0472
     let fov_radians = core::f32::consts::PI / 3.0;
-    let projection = perspective(fov_radians, aspect, 0.1, 1000.0);
+    // Use reasonable near/far for better depth precision
+    let projection = perspective(fov_radians, aspect, 1.0, 100.0);
 
     serial_println!("Entering main loop...");
 
@@ -232,20 +251,34 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         let view = look_at(camera_pos, Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
 
         // Render ground
-        let ground_model = Mat4::IDENTITY;
-        render_mesh_with_ctx(&render_ctx, &_ground, &ground_model, &view, &projection, fb_width, fb_height);
+        let ground_model = Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)); // Below the cube
+        render_mesh_with_ctx(&render_ctx, &ground, &ground_model, &view, &projection, fb_width, fb_height);
 
         // Render spinning cube
         let cube_model = Mat4::from_rotation_y(rotation) * Mat4::from_rotation_x(rotation * 0.7);
         render_mesh_with_ctx(&render_ctx, &cube, &cube_model, &view, &projection, fb_width, fb_height);
 
-        // Print FPS every 50 frames
-        frame_count = frame_count.wrapping_add(1);
-        if frame_count % 50 == 0 {
-            serial_println!("Frame {}", frame_count);
+        // Drop render context before drawing FPS (font uses its own lock)
+        drop(render_ctx);
+
+        // Draw FPS counter
+        font::draw_fps(current_fps, fb_width);
+
+        // Update FPS counter
+        fps_frame_count += 1;
+        let now = read_tsc();
+        let elapsed = now.wrapping_sub(last_fps_time);
+        if elapsed >= tsc_per_second {
+            current_fps = fps_frame_count;
+            fps_frame_count = 0;
+            last_fps_time = now;
         }
 
-        // smp::scheduler::next_frame();  // SMP disabled
+        // Print FPS to serial every 100 frames
+        frame_count = frame_count.wrapping_add(1);
+        if frame_count % 100 == 0 {
+            serial_println!("Frame {} FPS: {}", frame_count, current_fps);
+        }
     }
 
     halt_loop();

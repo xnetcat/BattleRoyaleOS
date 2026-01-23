@@ -48,6 +48,7 @@ impl RenderContext {
     }
 
     /// Put a pixel at (x, y) with color if z-test passes
+    /// Uses inverted depth: larger z = closer to camera
     #[inline]
     pub fn put_pixel_with_z(&self, x: usize, y: usize, z: f32, color: u32) {
         if x >= self.fb_width || y >= self.fb_height {
@@ -58,7 +59,8 @@ impl RenderContext {
         unsafe {
             let z_ptr = self.zb_ptr.add(idx);
             let current_z = *z_ptr;
-            if z < current_z {
+            // Larger z = closer (reversed depth buffer)
+            if z > current_z {
                 *z_ptr = z;
                 let fb_ptr = self.fb_ptr.add(idx);
                 *fb_ptr = color;
@@ -92,26 +94,27 @@ impl RenderContext {
     }
 
     /// Clear the z-buffer (optimized unrolled loop)
+    /// Uses negative infinity since larger z = closer
     pub fn clear_zbuffer(&self) {
         let size = self.fb_width * self.fb_height;
-        let inf = f32::INFINITY;
+        let neg_inf = f32::NEG_INFINITY;
         unsafe {
             let mut i = 0;
             // Process 8 values at a time
             while i + 8 <= size {
-                *self.zb_ptr.add(i) = inf;
-                *self.zb_ptr.add(i + 1) = inf;
-                *self.zb_ptr.add(i + 2) = inf;
-                *self.zb_ptr.add(i + 3) = inf;
-                *self.zb_ptr.add(i + 4) = inf;
-                *self.zb_ptr.add(i + 5) = inf;
-                *self.zb_ptr.add(i + 6) = inf;
-                *self.zb_ptr.add(i + 7) = inf;
+                *self.zb_ptr.add(i) = neg_inf;
+                *self.zb_ptr.add(i + 1) = neg_inf;
+                *self.zb_ptr.add(i + 2) = neg_inf;
+                *self.zb_ptr.add(i + 3) = neg_inf;
+                *self.zb_ptr.add(i + 4) = neg_inf;
+                *self.zb_ptr.add(i + 5) = neg_inf;
+                *self.zb_ptr.add(i + 6) = neg_inf;
+                *self.zb_ptr.add(i + 7) = neg_inf;
                 i += 8;
             }
             // Handle remaining
             while i < size {
-                *self.zb_ptr.add(i) = inf;
+                *self.zb_ptr.add(i) = neg_inf;
                 i += 1;
             }
         }
