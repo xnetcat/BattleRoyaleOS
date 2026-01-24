@@ -60,7 +60,7 @@ impl CustomizationScreen {
             }
             MenuAction::Back => {
                 self.save();
-                return Some(GameState::MainMenu);
+                return Some(GameState::PartyLobby);
             }
             MenuAction::Select | MenuAction::None => {}
         }
@@ -247,6 +247,96 @@ impl CustomizationScreen {
                 0x333333
             };
             fill_rect_raw(fb, cx + 4 * scale, cy - 4 * scale, bp_size, bp_size + scale, bp_color);
+        }
+
+        // Draw glider preview if Glider category is selected
+        if self.selected_category == CustomizationCategory::Glider as usize {
+            self.draw_glider_preview(fb, x + 20, y + height - 120, custom.glider_style);
+        }
+    }
+
+    /// Draw a small glider preview
+    fn draw_glider_preview(&self, fb: &crate::graphics::framebuffer::Framebuffer, x: usize, y: usize, style: u8) {
+        // Glider colors
+        let glider_colors = [
+            0xE53935, // Red
+            0x1E88E5, // Blue
+            0x44AA44, // Green
+            0xFFAA00, // Orange
+        ];
+        let main_color = glider_colors[style as usize % 4];
+        let accent_color = 0x222222;
+        let string_color = 0x888888;
+
+        // Preview label
+        font::draw_string_raw(fb, x, y, "GLIDER:", colors::SUBTITLE, 1);
+
+        // Glider canopy (simplified dome shape)
+        let canopy_x = x + 80;
+        let canopy_y = y + 10;
+        let canopy_width = 80;
+        let canopy_height = 30;
+
+        // Main canopy
+        fill_rect_raw(fb, canopy_x, canopy_y, canopy_width, canopy_height, main_color);
+
+        // Accent stripes
+        let stripe_width = 8;
+        fill_rect_raw(fb, canopy_x + canopy_width / 2 - stripe_width / 2, canopy_y, stripe_width, canopy_height, accent_color);
+        fill_rect_raw(fb, canopy_x, canopy_y + canopy_height / 2 - 2, canopy_width, 4, accent_color);
+
+        // Suspension strings (simplified as lines)
+        let harness_y = canopy_y + canopy_height + 25;
+        let harness_x = canopy_x + canopy_width / 2;
+
+        // Draw strings from corners to harness point
+        draw_line(fb, canopy_x + 5, canopy_y + canopy_height, harness_x - 5, harness_y, string_color);
+        draw_line(fb, canopy_x + canopy_width - 5, canopy_y + canopy_height, harness_x + 5, harness_y, string_color);
+
+        // Harness point
+        fill_rect_raw(fb, harness_x - 4, harness_y, 8, 6, accent_color);
+
+        // Style name
+        let style_names = ["Red", "Blue", "Green", "Orange"];
+        let style_name = style_names[style as usize % 4];
+        font::draw_string_raw(fb, x, y + 70, style_name, colors::WHITE, 2);
+    }
+}
+
+/// Draw a line between two points (Bresenham's algorithm)
+fn draw_line(fb: &crate::graphics::framebuffer::Framebuffer, x0: usize, y0: usize, x1: usize, y1: usize, color: u32) {
+    let dx = (x1 as i32 - x0 as i32).abs();
+    let dy = -(y1 as i32 - y0 as i32).abs();
+    let sx: i32 = if x0 < x1 { 1 } else { -1 };
+    let sy: i32 = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    let mut x = x0 as i32;
+    let mut y = y0 as i32;
+
+    loop {
+        if x >= 0 && y >= 0 && (x as usize) < fb.width && (y as usize) < fb.height {
+            fb.put_pixel(x as usize, y as usize, color);
+        }
+
+        if x == x1 as i32 && y == y1 as i32 {
+            break;
+        }
+
+        let e2 = 2 * err;
+        if e2 >= dy {
+            if x == x1 as i32 {
+                break;
+            }
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            if y == y1 as i32 {
+                break;
+            }
+            err += dx;
+            y += sy;
         }
     }
 }

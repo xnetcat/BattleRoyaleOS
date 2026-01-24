@@ -153,6 +153,11 @@ extern "C" fn _start() -> ! {
     smp::scheduler::init();
     serial_println!("SMP initialized");
 
+    // Initialize mouse
+    serial_println!("Initializing mouse...");
+    game::input::init_mouse();
+    serial_println!("Mouse initialized");
+
     serial_println!("Starting main loop...");
 
     // Main game loop
@@ -177,7 +182,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let mut last_frame_time = read_tsc();
 
     // Create reusable meshes for game entities
-    let terrain = mesh::create_terrain_grid(100.0, 50, Vec3::new(0.2, 0.6, 0.3));
+    // Terrain must match MAP_SIZE (2000.0) so players can see/land on it from bus
+    let terrain = mesh::create_terrain_grid(2000.0, 100, Vec3::new(0.2, 0.6, 0.3));
     let player_mesh = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
     let wall_mesh = mesh::create_wall_mesh(Vec3::new(0.6, 0.5, 0.4));
     let bus_mesh = mesh::create_battle_bus_mesh();
@@ -187,9 +193,10 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         wall_mesh.triangle_count(), bus_mesh.triangle_count());
 
     // Camera setup
+    // Far plane increased to 3000.0 to see across the 2000x2000 map from bus height
     let aspect = fb_width as f32 / fb_height as f32;
     let fov_radians = core::f32::consts::PI / 3.0;
-    let projection = perspective(fov_radians, aspect, 0.1, 100.0);
+    let projection = perspective(fov_radians, aspect, 0.1, 3000.0);
 
     serial_println!("Parallel rendering: 4 cores active");
 
@@ -197,6 +204,9 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let mut main_menu = ui::main_menu::MainMenuScreen::new(fb_width, fb_height);
     let mut settings_screen = ui::settings::SettingsScreen::new(fb_width, fb_height);
     let mut customization_screen = ui::customization::CustomizationScreen::new(fb_width, fb_height);
+    let mut server_select_screen = ui::server_select::ServerSelectScreen::new(fb_width, fb_height);
+    let mut fortnite_lobby = ui::fortnite_lobby::FortniteLobby::new(fb_width, fb_height);
+    let mut test_map_screen = ui::test_map::TestMapScreen::new(fb_width, fb_height);
     let mut lobby_screen = ui::lobby::LobbyScreen::new(fb_width, fb_height);
 
     // Previous key state for edge detection
@@ -205,7 +215,11 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // Local player tracking
     let mut local_player_id: Option<u8> = None;
     let mut player_yaw: f32 = 0.0;
+    let mut player_pitch: f32 = 0.0;
     let mut input_sequence: u32 = 0;
+
+    // Previous mouse state for click detection
+    let mut prev_mouse_left = false;
 
     // Countdown timer
     let mut countdown_timer = 0.0f32;
@@ -223,16 +237,59 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         let current_state = get_state();
 
         match current_state {
-            GameState::MainMenu => {
-                // Update main menu
-                if let Some(new_state) = main_menu.update(menu_action) {
-                    set_state(new_state);
+            GameState::PartyLobby => {
+                // Check for 'T' key to enter test map
+                if key_state.t && !prev_key_state.t {
+                    set_state(GameState::TestMap);
+                    continue;
                 }
 
-                // Render main menu
-                render_menu_frame(fb_width, fb_height, |ctx| {
-                    main_menu.draw(ctx, fb_width, fb_height);
-                });
+                // Update Fortnite-style party lobby
+                fortnite_lobby.tick();
+                if let Some(new_state) = fortnite_lobby.update(menu_action) {
+                    set_state(new_state);
+
+                    // If starting matchmaking, prepare for game
+                    if matches!(new_state, GameState::Matchmaking { .. }) {
+                        // In offline mode, skip matchmaking and go straight to countdown
+                        countdown_timer = 5.0;
+                        game::world::init(true);
+
+                        // Add local player
+                        local_player_id = {
+                            let mut world = game::world::GAME_WORLD.lock();
+                            if let Some(w) = world.as_mut() {
+                                w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
+                            } else {
+                                None
+                            }
+                        };
+
+                        // Skip matchmaking in offline mode - go directly to countdown
+                        set_state(GameState::LobbyCountdown { remaining_secs: 5 });
+                    }
+                }
+
+                // First render 3D player preview (includes sunset background)
+                render_lobby_frame(fb_width, fb_height, &fortnite_lobby, &projection);
+
+                // Then draw lobby UI overlay on top (skip background since 3D is rendered)
+                let ctx = match rasterizer::RenderContext::acquire() {
+                    Some(ctx) => ctx,
+                    None => continue,
+                };
+                fortnite_lobby.draw_ui_only(&ctx, fb_width, fb_height, true);
+                drop(ctx);
+
+                // Draw cursor and present
+                {
+                    let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+                    if let Some(fb) = fb_guard.as_ref() {
+                        let mouse = game::input::get_mouse_state();
+                        graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
+                        fb.present();
+                    }
+                }
             }
 
             GameState::Settings => {
@@ -260,35 +317,26 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 rotation += 0.02;
             }
 
-            GameState::Lobby => {
-                // Update lobby screen
-                if let Some(new_state) = lobby_screen.update(menu_action) {
-                    set_state(new_state);
-
-                    // If starting countdown, initialize game world
-                    if matches!(new_state, GameState::Countdown { .. }) {
-                        countdown_timer = 5.0;
-                        game::world::init(true);
-
-                        // Add local player
-                        local_player_id = {
-                            let mut world = game::world::GAME_WORLD.lock();
-                            if let Some(w) = world.as_mut() {
-                                w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
-                            } else {
-                                None
-                            }
-                        };
-                    }
-                }
-
-                // Render lobby
+            GameState::Matchmaking { elapsed_secs } => {
+                // Show matchmaking screen
+                // In offline mode, this is skipped, but keeping for future multiplayer
                 render_menu_frame(fb_width, fb_height, |ctx| {
-                    lobby_screen.draw(ctx, fb_width, fb_height);
+                    ui::game_ui::draw_matchmaking(ctx, fb_width, fb_height, elapsed_secs);
                 });
+
+                // ESC to cancel
+                if menu_action == MenuAction::Back {
+                    set_state(GameState::PartyLobby);
+                }
             }
 
-            GameState::Countdown { remaining_secs } => {
+            GameState::LobbyIsland => {
+                // Warmup island - for multiplayer (skip in offline mode)
+                // For now, just go to countdown
+                set_state(GameState::LobbyCountdown { remaining_secs: 10 });
+            }
+
+            GameState::LobbyCountdown { remaining_secs } => {
                 countdown_timer -= 1.0 / 60.0;
 
                 if countdown_timer <= 0.0 {
@@ -296,7 +344,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 } else {
                     let new_secs = libm::ceilf(countdown_timer) as u8;
                     if new_secs != remaining_secs {
-                        set_state(GameState::Countdown { remaining_secs: new_secs });
+                        set_state(GameState::LobbyCountdown { remaining_secs: new_secs });
                     }
                 }
 
@@ -306,16 +354,43 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 });
             }
 
+            GameState::TestMap => {
+                // Update test map
+                test_map_screen.tick();
+                if let Some(new_state) = test_map_screen.update(menu_action) {
+                    set_state(new_state);
+                }
+
+                // Render test map with 3D model preview
+                render_test_map_frame(
+                    fb_width, fb_height,
+                    &test_map_screen,
+                    &projection,
+                );
+            }
+
             GameState::BusPhase | GameState::InGame => {
-                // Check for escape to return to menu
+                // Check for escape to return to party lobby
                 if menu_action == MenuAction::Back {
-                    set_state(GameState::MainMenu);
+                    set_state(GameState::PartyLobby);
                     continue;
                 }
 
-                // Apply keyboard input to local player
+                // Get mouse state for camera control
+                let mouse = game::input::get_mouse_state();
+
+                // Apply keyboard and mouse input to local player
                 if let Some(id) = local_player_id {
-                    // Update player rotation with A/D keys
+                    // Mouse look sensitivity
+                    const MOUSE_SENSITIVITY: f32 = 0.003;
+
+                    // Update player rotation with mouse movement
+                    player_yaw += mouse.delta_x as f32 * MOUSE_SENSITIVITY;
+                    player_pitch += mouse.delta_y as f32 * MOUSE_SENSITIVITY;
+                    // Clamp pitch to prevent camera flipping
+                    player_pitch = player_pitch.clamp(-1.5, 1.5);
+
+                    // Also support A/D keys for rotation (tank controls)
                     if key_state.a {
                         player_yaw -= 0.05;
                     }
@@ -323,20 +398,21 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                         player_yaw += 0.05;
                     }
 
-                    // Create input from keyboard state
+                    // Create input from keyboard + mouse state
                     input_sequence += 1;
                     let input = protocol::packets::ClientInput {
                         player_id: id,
                         sequence: input_sequence,
                         forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
-                        strafe: 0, // A/D used for rotation instead
+                        strafe: 0, // A/D used for rotation
                         jump: key_state.space,
                         crouch: key_state.ctrl,
-                        fire: key_state.shift,
+                        // Fire with left click OR shift key
+                        fire: mouse.left_button || key_state.shift,
                         build: key_state.b,
                         exit_bus: key_state.space,
                         yaw: (player_yaw.to_degrees() * 100.0) as i16,
-                        pitch: 0,
+                        pitch: (player_pitch.to_degrees() * 100.0) as i16,
                     };
 
                     // Apply input to game world
@@ -344,6 +420,9 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                         world.apply_input(id, &input);
                     }
                 }
+
+                // Reset mouse deltas after use
+                game::input::reset_mouse_deltas();
 
                 // Update game world physics
                 if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
@@ -370,9 +449,9 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
             }
 
             GameState::Victory { winner_id } => {
-                // Check for any key to return to menu
+                // Check for any key to return to party lobby
                 if menu_action == MenuAction::Select || menu_action == MenuAction::Back {
-                    set_state(GameState::MainMenu);
+                    set_state(GameState::PartyLobby);
                 }
 
                 // Render victory screen
@@ -433,7 +512,7 @@ fn get_menu_action(current: &game::input::KeyState, prev: &game::input::KeyState
     MenuAction::None
 }
 
-/// Render a menu frame (2D UI only)
+/// Render a menu frame (2D UI only) with mouse cursor
 fn render_menu_frame<F>(fb_width: usize, fb_height: usize, draw_fn: F)
 where
     F: FnOnce(&rasterizer::RenderContext),
@@ -453,13 +532,236 @@ where
     // Drop context
     drop(render_ctx);
 
-    // Present
+    // Draw cursor and present
     {
         let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
         if let Some(fb) = fb_guard.as_ref() {
+            // Draw mouse cursor on top of everything
+            let mouse = game::input::get_mouse_state();
+            graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
             fb.present();
         }
     }
+}
+
+/// Render the test map / model gallery
+fn render_test_map_frame(
+    fb_width: usize,
+    fb_height: usize,
+    test_map: &ui::test_map::TestMapScreen,
+    projection: &Mat4,
+) {
+    use renderer::voxel_models;
+    use renderer::voxel::CharacterCustomization;
+
+    // Acquire render context
+    let render_ctx = match rasterizer::RenderContext::acquire() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+
+    // Clear to dark background
+    render_ctx.clear(rgb(20, 25, 40));
+    render_ctx.clear_zbuffer();
+
+    // Get current model mesh
+    let model_index = test_map.get_model_index();
+    let rotation = test_map.get_rotation();
+    let zoom = test_map.get_zoom();
+
+    // Create mesh based on model index
+    let model_mesh = match model_index {
+        0 => voxel_models::create_player_model(&CharacterCustomization::default()).to_mesh(0.1 * zoom),
+        1 => voxel_models::create_shotgun_model().to_mesh(0.15 * zoom),
+        2 => voxel_models::create_ar_model().to_mesh(0.15 * zoom),
+        3 => voxel_models::create_pistol_model().to_mesh(0.2 * zoom),
+        4 => voxel_models::create_smg_model().to_mesh(0.15 * zoom),
+        5 => voxel_models::create_sniper_model().to_mesh(0.12 * zoom),
+        6 => voxel_models::create_pickaxe_model().to_mesh(0.15 * zoom),
+        7 => voxel_models::create_glider_model(0).to_mesh(0.08 * zoom),
+        8 => voxel_models::create_glider_model(1).to_mesh(0.08 * zoom),
+        9 => voxel_models::create_glider_model(2).to_mesh(0.08 * zoom),
+        10 => voxel_models::create_glider_model(3).to_mesh(0.08 * zoom),
+        11 => voxel_models::create_pine_tree().to_mesh(0.1 * zoom),
+        12 => voxel_models::create_oak_tree().to_mesh(0.1 * zoom),
+        13 => voxel_models::create_rock(0).to_mesh(0.2 * zoom),
+        14 => voxel_models::create_wall_wood().to_mesh(0.1 * zoom),
+        15 => voxel_models::create_wall_brick().to_mesh(0.1 * zoom),
+        16 => voxel_models::create_wall_metal().to_mesh(0.1 * zoom),
+        17 => voxel_models::create_floor_wood().to_mesh(0.1 * zoom),
+        18 => voxel_models::create_ramp_wood().to_mesh(0.1 * zoom),
+        19 => voxel_models::create_battle_bus().to_mesh(0.05 * zoom),
+        20 => voxel_models::create_chest().to_mesh(0.2 * zoom),
+        21 => voxel_models::create_backpack_model(1).to_mesh(0.2 * zoom),
+        22 => voxel_models::create_backpack_model(2).to_mesh(0.2 * zoom),
+        _ => voxel_models::create_backpack_model(3).to_mesh(0.2 * zoom),
+    };
+
+    // Camera setup - orbit around the model
+    let camera_dist = 8.0;
+    let camera_height = 3.0;
+    let camera_pos = Vec3::new(
+        libm::sinf(rotation) * camera_dist,
+        camera_height,
+        libm::cosf(rotation) * camera_dist,
+    );
+    let camera_target = Vec3::new(0.0, 1.0, 0.0);
+    let view = look_at(camera_pos, camera_target, Vec3::Y);
+
+    // Clear tile bins
+    tiles::clear_lockfree_bins();
+    tiles::reset_triangle_buffer();
+
+    // Transform and bin the model
+    let model_matrix = Mat4::IDENTITY;
+    bin_mesh(&model_mesh, &model_matrix, &view, projection, fb_width as f32, fb_height as f32);
+
+    // Reset and render tiles
+    tiles::reset();
+    smp::scheduler::start_render();
+    render_worker(0);
+    smp::sync::RENDER_BARRIER.wait();
+    smp::scheduler::end_render();
+
+    drop(render_ctx);
+
+    // Draw UI overlay
+    let ctx = match rasterizer::RenderContext::acquire() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+    test_map.draw(&ctx, fb_width, fb_height);
+    drop(ctx);
+
+    // Draw cursor and present
+    {
+        let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+        if let Some(fb) = fb_guard.as_ref() {
+            let mouse = game::input::get_mouse_state();
+            graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
+            fb.present();
+        }
+    }
+}
+
+/// Render the lobby frame with 3D player preview
+fn render_lobby_frame(
+    fb_width: usize,
+    fb_height: usize,
+    lobby: &ui::fortnite_lobby::FortniteLobby,
+    projection: &Mat4,
+) {
+    use renderer::voxel_models;
+    use game::state::PLAYER_CUSTOMIZATION;
+
+    // Acquire render context
+    let render_ctx = match rasterizer::RenderContext::acquire() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+
+    // Draw sunset gradient background first
+    draw_sunset_gradient(&render_ctx, fb_width, fb_height);
+
+    // Clear z-buffer for 3D rendering
+    render_ctx.clear_zbuffer();
+
+    // Get current player customization
+    let custom = PLAYER_CUSTOMIZATION.lock();
+    let renderer_custom = custom.to_renderer();
+    drop(custom);
+
+    // Create player mesh from voxel model
+    let player_mesh = voxel_models::create_player_model(&renderer_custom).to_mesh(0.15);
+
+    // Create a simple platform mesh (flat quad)
+    let platform_mesh = mesh::create_terrain_grid(3.0, 2, Vec3::new(0.2, 0.3, 0.5));
+
+    // Camera setup - orbit around the player
+    let rotation = lobby.get_rotation();
+    let camera_dist = 6.0;
+    let camera_height = 2.0;
+    let camera_pos = Vec3::new(
+        libm::sinf(rotation) * camera_dist,
+        camera_height,
+        libm::cosf(rotation) * camera_dist,
+    );
+    let camera_target = Vec3::new(0.0, 1.2, 0.0);
+    let view = look_at(camera_pos, camera_target, Vec3::Y);
+
+    // Clear tile bins
+    tiles::clear_lockfree_bins();
+    tiles::reset_triangle_buffer();
+
+    // Transform and bin the platform
+    let platform_model = Mat4::from_translation(Vec3::new(0.0, -0.1, 0.0));
+    bin_mesh(&platform_mesh, &platform_model, &view, projection, fb_width as f32, fb_height as f32);
+
+    // Transform and bin the player model (standing on platform)
+    let player_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
+    bin_mesh(&player_mesh, &player_model, &view, projection, fb_width as f32, fb_height as f32);
+
+    // Reset and render tiles
+    tiles::reset();
+    smp::scheduler::start_render();
+    render_worker(0);
+    smp::sync::RENDER_BARRIER.wait();
+    smp::scheduler::end_render();
+
+    drop(render_ctx);
+}
+
+/// Draw sunset gradient background for lobby
+fn draw_sunset_gradient(_ctx: &rasterizer::RenderContext, fb_width: usize, fb_height: usize) {
+    let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+    let fb = match fb_guard.as_ref() {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Sunset gradient: orange -> pink -> purple -> dark blue
+    let colors_top = [0xFFu8, 0x8C, 0x00]; // Orange
+    let colors_mid1 = [0xFF, 0x69, 0xB4]; // Pink
+    let colors_mid2 = [0x94, 0x00, 0xD3]; // Purple
+    let colors_bot = [0x19, 0x19, 0x70];  // Dark blue
+
+    for y in 0..fb_height.min(fb.height) {
+        let t = y as f32 / fb_height as f32;
+
+        let (r, g, b) = if t < 0.3 {
+            let local_t = t / 0.3;
+            (
+                lerp_u8(colors_top[0], colors_mid1[0], local_t),
+                lerp_u8(colors_top[1], colors_mid1[1], local_t),
+                lerp_u8(colors_top[2], colors_mid1[2], local_t),
+            )
+        } else if t < 0.6 {
+            let local_t = (t - 0.3) / 0.3;
+            (
+                lerp_u8(colors_mid1[0], colors_mid2[0], local_t),
+                lerp_u8(colors_mid1[1], colors_mid2[1], local_t),
+                lerp_u8(colors_mid1[2], colors_mid2[2], local_t),
+            )
+        } else {
+            let local_t = (t - 0.6) / 0.4;
+            (
+                lerp_u8(colors_mid2[0], colors_bot[0], local_t),
+                lerp_u8(colors_mid2[1], colors_bot[1], local_t),
+                lerp_u8(colors_mid2[2], colors_bot[2], local_t),
+            )
+        };
+
+        let color = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+
+        for x in 0..fb_width.min(fb.width) {
+            fb.put_pixel(x, y, color);
+        }
+    }
+}
+
+/// Linear interpolation for u8
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    ((a as f32) + (b as f32 - a as f32) * t) as u8
 }
 
 /// Render a game frame (3D world + HUD)

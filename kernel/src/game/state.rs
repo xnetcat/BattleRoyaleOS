@@ -7,27 +7,42 @@ use spin::Mutex;
 /// Main game state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
-    /// Main menu - play, settings, quit buttons
-    MainMenu,
+    /// Party Lobby - social hub, party up to 4, customize, queue
+    PartyLobby,
     /// Settings screen - graphics, audio, controls
     Settings,
     /// Player customization screen
     Customization,
-    /// Lobby - waiting for players, ready up
-    Lobby,
-    /// Countdown before bus phase
-    Countdown { remaining_secs: u8 },
+    /// Matchmaking queue - searching for players
+    Matchmaking { elapsed_secs: u16 },
+    /// Lobby Island - warmup area, respawn on death
+    LobbyIsland,
+    /// Final countdown before bus (10 seconds)
+    LobbyCountdown { remaining_secs: u8 },
     /// Bus flying across the map
     BusPhase,
     /// Active gameplay
     InGame,
     /// Victory/defeat screen
     Victory { winner_id: Option<u8> },
+    /// Test map - model gallery viewer
+    TestMap,
+}
+
+/// Network connection mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkMode {
+    /// Offline single-player mode
+    Offline,
+    /// Server mode - host a game
+    Server { port: u16 },
+    /// Client mode - connect to a server
+    Client { server_ip: [u8; 4], port: u16 },
 }
 
 impl Default for GameState {
     fn default() -> Self {
-        Self::MainMenu
+        Self::PartyLobby
     }
 }
 
@@ -414,7 +429,10 @@ impl LobbyPlayer {
 }
 
 /// Global game state
-pub static GAME_STATE: Mutex<GameState> = Mutex::new(GameState::MainMenu);
+pub static GAME_STATE: Mutex<GameState> = Mutex::new(GameState::PartyLobby);
+
+/// Global network mode
+pub static NETWORK_MODE: Mutex<NetworkMode> = Mutex::new(NetworkMode::Offline);
 
 /// Global settings
 pub static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
@@ -451,8 +469,18 @@ pub fn get_state() -> GameState {
 pub fn is_menu_state() -> bool {
     matches!(
         get_state(),
-        GameState::MainMenu | GameState::Settings | GameState::Customization | GameState::Lobby
+        GameState::PartyLobby | GameState::Settings | GameState::Customization | GameState::Matchmaking { .. } | GameState::TestMap
     )
+}
+
+/// Get current network mode
+pub fn get_network_mode() -> NetworkMode {
+    *NETWORK_MODE.lock()
+}
+
+/// Set network mode
+pub fn set_network_mode(mode: NetworkMode) {
+    *NETWORK_MODE.lock() = mode;
 }
 
 /// Check if we're in active gameplay

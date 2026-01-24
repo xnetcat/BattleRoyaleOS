@@ -1,5 +1,6 @@
 //! Graphics subsystem
 
+pub mod cursor;
 pub mod font;
 pub mod framebuffer;
 pub mod pipeline;

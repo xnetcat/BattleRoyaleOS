@@ -31,6 +31,88 @@ pub fn draw_countdown(_ctx: &RenderContext, fb_width: usize, fb_height: usize, s
     font::draw_string_centered_raw(fb, fb_height / 2 + 120, "GET READY!", colors::WHITE, 3);
 }
 
+/// Draw matchmaking screen
+pub fn draw_matchmaking(_ctx: &RenderContext, fb_width: usize, fb_height: usize, elapsed_secs: u16) {
+    let fb_guard = FRAMEBUFFER.lock();
+    let fb = match fb_guard.as_ref() {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Draw gradient background
+    draw_gradient_background_raw(fb, fb_width, fb_height);
+
+    // Draw title
+    let title = "FINDING MATCH";
+    font::draw_string_centered_raw(fb, fb_height / 2 - 120, title, colors::TITLE, 4);
+
+    // Draw animated dots based on elapsed time
+    let dots = match (elapsed_secs / 1) % 4 {
+        0 => ".",
+        1 => "..",
+        2 => "...",
+        _ => "",
+    };
+    font::draw_string_centered_raw(fb, fb_height / 2 - 60, dots, colors::WHITE, 4);
+
+    // Draw elapsed time
+    let minutes = elapsed_secs / 60;
+    let seconds = elapsed_secs % 60;
+    let mut time_buf = [0u8; 8];
+    let time_str = format_time(minutes as u8, seconds as u8, &mut time_buf);
+    font::draw_string_centered_raw(fb, fb_height / 2, time_str, colors::FN_YELLOW, 3);
+
+    // Draw subtitle
+    font::draw_string_centered_raw(fb, fb_height / 2 + 60, "Searching for players...", colors::SUBTITLE, 2);
+
+    // Draw cancel hint
+    font::draw_string_centered_raw(fb, fb_height - 80, "PRESS ESC TO CANCEL", colors::SUBTITLE, 2);
+}
+
+/// Format time as "M:SS"
+fn format_time<'a>(minutes: u8, seconds: u8, buf: &'a mut [u8; 8]) -> &'a str {
+    let mut pos = 0;
+
+    // Minutes
+    if minutes == 0 {
+        buf[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut n = minutes as usize;
+        let start = pos;
+        while n > 0 && pos < 8 {
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            pos += 1;
+        }
+        buf[start..pos].reverse();
+    }
+
+    buf[pos] = b':';
+    pos += 1;
+
+    // Seconds (always 2 digits)
+    if seconds < 10 {
+        buf[pos] = b'0';
+        pos += 1;
+    }
+    if seconds == 0 {
+        buf[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut n = seconds as usize;
+        let start = pos;
+        while n > 0 && pos < 8 {
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+            pos += 1;
+        }
+        buf[start..pos].reverse();
+    }
+
+    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
+}
+
 /// Draw victory/defeat screen
 pub fn draw_victory(_ctx: &RenderContext, fb_width: usize, fb_height: usize, winner_id: Option<u8>) {
     let fb_guard = FRAMEBUFFER.lock();

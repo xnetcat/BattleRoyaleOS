@@ -371,6 +371,125 @@ pub fn create_terrain_grid(size: f32, subdivisions: usize, base_color: Vec3) -> 
     mesh
 }
 
+/// Create a hexagonal lobby platform with glow effect
+pub fn create_lobby_platform(scale: f32) -> Mesh {
+    let mut mesh = Mesh::new();
+
+    let radius = 3.0 * scale;
+    let height = 0.3 * scale;
+    let segments = 6;
+
+    // Platform colors (glowing cyan/blue)
+    let top_color = Vec3::new(0.4, 0.8, 1.0);
+    let side_color = Vec3::new(0.2, 0.5, 0.8);
+
+    // Top center vertex
+    let center_idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(Vertex::new(Vec3::new(0.0, height, 0.0), Vec3::Y, top_color, Vec2::ZERO));
+
+    // Top edge vertices
+    for i in 0..segments {
+        let angle = (i as f32 / segments as f32) * core::f32::consts::TAU;
+        let x = libm::cosf(angle) * radius;
+        let z = libm::sinf(angle) * radius;
+        mesh.vertices.push(Vertex::new(Vec3::new(x, height, z), Vec3::Y, top_color * 0.8, Vec2::ZERO));
+    }
+
+    // Top face triangles
+    for i in 0..segments {
+        let next = (i + 1) % segments;
+        mesh.indices.extend([center_idx, center_idx + 1 + i as u32, center_idx + 1 + next as u32]);
+    }
+
+    // Side faces
+    for i in 0..segments {
+        let angle1 = (i as f32 / segments as f32) * core::f32::consts::TAU;
+        let angle2 = ((i + 1) as f32 / segments as f32) * core::f32::consts::TAU;
+
+        let x1 = libm::cosf(angle1) * radius;
+        let z1 = libm::sinf(angle1) * radius;
+        let x2 = libm::cosf(angle2) * radius;
+        let z2 = libm::sinf(angle2) * radius;
+
+        let normal = Vec3::new((x1 + x2) * 0.5, 0.0, (z1 + z2) * 0.5).normalize();
+
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex::new(Vec3::new(x1, 0.0, z1), normal, side_color * 0.7, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x2, 0.0, z2), normal, side_color * 0.7, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x2, height, z2), normal, side_color, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x1, height, z1), normal, side_color, Vec2::ZERO));
+
+        mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    mesh
+}
+
+/// Create a palm tree mesh for lobby decoration
+pub fn create_palm_tree(height: f32, frond_count: usize) -> Mesh {
+    let mut mesh = Mesh::new();
+
+    let trunk_color = Vec3::new(0.5, 0.35, 0.2);
+    let frond_color = Vec3::new(0.2, 0.6, 0.3);
+    let trunk_radius = height * 0.05;
+    let segments = 6;
+
+    // Trunk (tapered cylinder)
+    for i in 0..segments {
+        let angle1 = (i as f32 / segments as f32) * core::f32::consts::TAU;
+        let angle2 = ((i + 1) as f32 / segments as f32) * core::f32::consts::TAU;
+
+        let x1_bot = libm::cosf(angle1) * trunk_radius;
+        let z1_bot = libm::sinf(angle1) * trunk_radius;
+        let x2_bot = libm::cosf(angle2) * trunk_radius;
+        let z2_bot = libm::sinf(angle2) * trunk_radius;
+
+        let x1_top = libm::cosf(angle1) * trunk_radius * 0.7;
+        let z1_top = libm::sinf(angle1) * trunk_radius * 0.7;
+        let x2_top = libm::cosf(angle2) * trunk_radius * 0.7;
+        let z2_top = libm::sinf(angle2) * trunk_radius * 0.7;
+
+        let normal = Vec3::new((x1_bot + x2_bot) * 0.5, 0.0, (z1_bot + z2_bot) * 0.5).normalize();
+
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex::new(Vec3::new(x1_bot, 0.0, z1_bot), normal, trunk_color * 0.8, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x2_bot, 0.0, z2_bot), normal, trunk_color * 0.8, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x2_top, height, z2_top), normal, trunk_color, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x1_top, height, z1_top), normal, trunk_color, Vec2::ZERO));
+
+        mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    // Fronds (simplified as triangular shapes)
+    let frond_length = height * 0.6;
+    let frond_width = height * 0.15;
+
+    for i in 0..frond_count {
+        let angle = (i as f32 / frond_count as f32) * core::f32::consts::TAU;
+        let droop = 0.3; // How much the frond droops
+
+        let start_x = 0.0;
+        let start_z = 0.0;
+        let end_x = libm::cosf(angle) * frond_length;
+        let end_z = libm::sinf(angle) * frond_length;
+        let end_y = height - frond_length * droop;
+
+        let perp_x = -libm::sinf(angle) * frond_width * 0.5;
+        let perp_z = libm::cosf(angle) * frond_width * 0.5;
+
+        let frond_normal = Vec3::Y;
+
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex::new(Vec3::new(start_x, height, start_z), frond_normal, frond_color, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(end_x + perp_x, end_y, end_z + perp_z), frond_normal, frond_color * 0.9, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(end_x - perp_x, end_y, end_z - perp_z), frond_normal, frond_color * 0.9, Vec2::ZERO));
+
+        mesh.indices.extend([base, base + 1, base + 2]);
+    }
+
+    mesh
+}
+
 /// Helper: Create a box with given dimensions and offset
 fn create_box(size: Vec3, offset: Vec3, color: Vec3) -> Mesh {
     let mut mesh = Mesh::new();

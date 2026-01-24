@@ -70,12 +70,12 @@ impl SettingsScreen {
                     self.local_settings.toggle(option);
                 } else if option == SettingsOption::Back {
                     self.save();
-                    return Some(GameState::MainMenu);
+                    return Some(GameState::PartyLobby);
                 }
             }
             MenuAction::Back => {
                 self.save();
-                return Some(GameState::MainMenu);
+                return Some(GameState::PartyLobby);
             }
             MenuAction::None => {}
         }

@@ -2,6 +2,7 @@
 
 use super::building::BuildPiece;
 use super::bus::BattleBus;
+use super::map::GameMap;
 use super::player::{Player, MAX_PLAYERS};
 use super::state::PlayerPhase;
 use super::storm::Storm;
@@ -18,6 +19,7 @@ pub struct GameWorld {
     pub buildings: Vec<BuildPiece>,
     pub bus: BattleBus,
     pub storm: Storm,
+    pub map: GameMap,
     pub is_server: bool,
 
     // Delta tracking for network updates
@@ -32,6 +34,7 @@ impl GameWorld {
             buildings: Vec::new(),
             bus: BattleBus::new(),
             storm: Storm::new(),
+            map: GameMap::new(12345), // Fixed seed for now
             is_server,
             changed_players: Vec::new(),
         }

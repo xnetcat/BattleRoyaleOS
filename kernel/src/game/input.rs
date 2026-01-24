@@ -32,6 +32,7 @@ pub mod ScanCode {
     pub const LCTRL: u8 = 0x1D;
     pub const LSHIFT: u8 = 0x2A;
     pub const B: u8 = 0x30;
+    pub const T: u8 = 0x14;
     pub const ENTER: u8 = 0x1C;
     pub const BACKSPACE: u8 = 0x0E;
 
@@ -83,6 +84,7 @@ pub struct KeyState {
     pub e: bool,
     pub r: bool,
     pub f: bool,
+    pub t: bool,
 }
 
 impl KeyState {
@@ -150,6 +152,7 @@ pub static KEY_STATE: Mutex<KeyState> = Mutex::new(KeyState {
     e: false,
     r: false,
     f: false,
+    t: false,
 });
 
 /// Global mouse state
@@ -190,6 +193,7 @@ pub static PREV_KEY_STATE: Mutex<KeyState> = Mutex::new(KeyState {
     e: false,
     r: false,
     f: false,
+    t: false,
 });
 
 /// Track if we're in an extended key sequence
@@ -352,6 +356,7 @@ pub fn poll_keyboard() {
                 ScanCode::E => state.e = !released,
                 ScanCode::R => state.r = !released,
                 ScanCode::F => state.f = !released,
+                ScanCode::T => state.t = !released,
                 _ => {}
             }
         }

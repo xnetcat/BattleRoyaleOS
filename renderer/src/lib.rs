@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod map_mesh;
 pub mod math;
 pub mod mesh;
 pub mod vertex;

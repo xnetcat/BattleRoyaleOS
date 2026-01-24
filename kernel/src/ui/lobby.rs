@@ -83,7 +83,7 @@ impl LobbyScreen {
             }
             MenuAction::Back => {
                 // Leave lobby with Escape
-                return Some(GameState::MainMenu);
+                return Some(GameState::PartyLobby);
             }
             MenuAction::Up => {
                 self.player_list.scroll_up();
@@ -100,7 +100,7 @@ impl LobbyScreen {
             if self.all_ready() && self.players.len() >= 1 {
                 self.countdown_active = true;
                 self.countdown_value = 5;
-                return Some(GameState::Countdown { remaining_secs: 5 });
+                return Some(GameState::LobbyCountdown { remaining_secs: 5 });
             }
         } else {
             // Countdown is active
