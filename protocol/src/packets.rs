@@ -214,6 +214,10 @@ pub enum Packet {
     /// Ping/pong for latency measurement
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
+    /// Client requests server info
+    Discovery,
+    /// Server responds with info
+    DiscoveryResponse { server_name: String, player_count: u8 },
 }
 
 impl Packet {
@@ -223,6 +227,8 @@ impl Packet {
     const TYPE_WORLD_DELTA: u8 = 4;
     const TYPE_PING: u8 = 5;
     const TYPE_PONG: u8 = 6;
+    const TYPE_DISCOVERY: u8 = 7;
+    const TYPE_DISCOVERY_RESPONSE: u8 = 8;
 
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -252,6 +258,15 @@ impl Packet {
             Packet::Pong { timestamp } => {
                 buf.push(Self::TYPE_PONG);
                 buf.extend_from_slice(&timestamp.to_le_bytes());
+            }
+            Packet::Discovery => {
+                buf.push(Self::TYPE_DISCOVERY);
+            }
+            Packet::DiscoveryResponse { server_name, player_count } => {
+                buf.push(Self::TYPE_DISCOVERY_RESPONSE);
+                buf.push(server_name.len() as u8);
+                buf.extend_from_slice(server_name.as_bytes());
+                buf.push(*player_count);
             }
         }
 
@@ -306,6 +321,22 @@ impl Packet {
                     buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
                 ]);
                 Some(Packet::Pong { timestamp })
+            }
+            Self::TYPE_DISCOVERY => Some(Packet::Discovery),
+            Self::TYPE_DISCOVERY_RESPONSE => {
+                if buf.len() < 2 {
+                    return None;
+                }
+                let len = buf[1] as usize;
+                if buf.len() < 2 + len + 1 {
+                    return None;
+                }
+                let server_name = String::from_utf8_lossy(&buf[2..2 + len]).into_owned();
+                let player_count = buf[2 + len];
+                Some(Packet::DiscoveryResponse {
+                    server_name,
+                    player_count,
+                })
             }
             _ => None,
         }

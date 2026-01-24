@@ -1,8 +1,8 @@
 //! Limine bootloader requests and responses
 
 use limine::request::{
-    FramebufferRequest, HhdmRequest, MemoryMapRequest, MpRequest, RequestsEndMarker,
-    RequestsStartMarker,
+    FramebufferRequest, HhdmRequest, KernelFileRequest, MemoryMapRequest, MpRequest,
+    RequestsEndMarker, RequestsStartMarker,
 };
 
 #[used]
@@ -37,3 +37,8 @@ pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 pub static SMP_REQUEST: MpRequest = MpRequest::new();
+
+/// Kernel file request to get command line arguments
+#[used]
+#[unsafe(link_section = ".requests")]
+pub static KERNEL_FILE_REQUEST: KernelFileRequest = KernelFileRequest::new();

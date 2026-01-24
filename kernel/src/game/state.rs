@@ -27,6 +27,8 @@ pub enum GameState {
     Victory { winner_id: Option<u8> },
     /// Test map - model gallery viewer
     TestMap,
+    /// Server selection screen
+    ServerSelect,
 }
 
 /// Network connection mode

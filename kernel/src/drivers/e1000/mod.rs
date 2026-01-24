@@ -14,6 +14,15 @@ pub use descriptors::{RxDescriptor, TxDescriptor};
 pub use regs::*;
 pub use ring::{RxRing, TxRing};
 
+/// Network device statistics
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeviceStats {
+    pub rx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_packets: u64,
+    pub tx_bytes: u64,
+}
+
 /// Number of RX descriptors
 pub const RX_RING_SIZE: usize = 256;
 /// Number of TX descriptors
@@ -27,6 +36,7 @@ pub struct E1000 {
     rx_ring: RxRing,
     tx_ring: TxRing,
     mac_address: [u8; 6],
+    stats: DeviceStats,
 }
 
 impl E1000 {
@@ -37,6 +47,7 @@ impl E1000 {
             rx_ring: RxRing::new(),
             tx_ring: TxRing::new(),
             mac_address: [0; 6],
+            stats: DeviceStats::default(),
         }
     }
 
@@ -256,6 +267,10 @@ impl E1000 {
         let new_tail = (tail + 1) % TX_RING_SIZE;
         self.write_reg(REG_TDT, new_tail as u32);
 
+        // Update stats
+        self.stats.tx_packets += 1;
+        self.stats.tx_bytes += data.len() as u64;
+
         Ok(())
     }
 
@@ -287,6 +302,10 @@ impl E1000 {
             // Update tail pointer
             self.write_reg(REG_RDT, tail as u32);
 
+            // Update stats
+            self.stats.rx_packets += 1;
+            self.stats.rx_bytes += data.len() as u64;
+
             Some(data)
         }
     }
@@ -298,6 +317,17 @@ impl E1000 {
         let desc = self.rx_ring.get_descriptor(next);
         let status = unsafe { (*desc).status };
         status & RX_STATUS_DD != 0
+    }
+
+    /// Check link status
+    pub fn link_status(&self) -> bool {
+        let status = self.read_reg(REG_STATUS);
+        status & STATUS_LU != 0
+    }
+
+    /// Get device statistics
+    pub fn get_stats(&self) -> DeviceStats {
+        self.stats
     }
 }
 

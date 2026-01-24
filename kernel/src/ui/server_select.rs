@@ -99,6 +99,8 @@ impl ServerSelectScreen {
     }
 
     fn handle_mode_select(&mut self, action: MenuAction) -> Option<GameState> {
+        // 'S' key for scan (mapped to special action or just check keyboard directly)
+        // For now, let's just use MenuAction::Select on Join mode to start Scan + Entry
         match action {
             MenuAction::Up => {
                 if self.selected_mode == 0 {
@@ -118,6 +120,9 @@ impl ServerSelectScreen {
                         return Some(GameState::PartyLobby);
                     }
                     ServerMode::Join => {
+                        // Broadcast discovery packet
+                        crate::net::protocol::broadcast_discovery();
+                        
                         // Enter IP entry mode
                         self.input_mode = InputMode::IpEntry;
                         self.ip_cursor = 0;
@@ -253,6 +258,18 @@ impl ServerSelectScreen {
                 colors::SUBTITLE,
                 1,
             );
+            
+            // Show scan hint for Join mode
+            if mode == ServerMode::Join && selected {
+                font::draw_string_raw(
+                    fb,
+                    panel_x + 20,
+                    desc_y + 20,
+                    "(Scan sent automatically on select)",
+                    colors::FN_YELLOW,
+                    1,
+                );
+            }
 
             // Selection indicator
             if selected {

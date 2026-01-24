@@ -17,8 +17,9 @@ mod net;
 mod smp;
 mod ui;
 
-use boot::{BASE_REVISION, HHDM_REQUEST, MEMORY_MAP_REQUEST};
+use boot::{BASE_REVISION, HHDM_REQUEST, KERNEL_FILE_REQUEST, MEMORY_MAP_REQUEST};
 use core::panic::PanicInfo;
+use core::ffi::CStr;
 use glam::{Mat4, Vec3};
 use graphics::{
     font,
@@ -145,8 +146,20 @@ extern "C" fn _start() -> ! {
 
     // Initialize game world
     serial_println!("Initializing game world...");
-    game::world::init(true); // Server mode
-    serial_println!("Game world initialized");
+    // Check kernel arguments for server/client mode
+    let mut is_server = false; // Default to client
+    if let Some(file) = KERNEL_FILE_REQUEST.get_response() {
+        // Explicitly handle CStr from Limine 0.5
+        let cmd_cstr: &CStr = file.file().string();
+        if let Ok(cmd_str) = cmd_cstr.to_str() {
+            serial_println!("Kernel args: {:?}", cmd_cstr);
+            if cmd_str.contains("server") {
+                is_server = true;
+            }
+        }
+    }
+    game::world::init(is_server);
+    serial_println!("Game world initialized (Server: {})", is_server);
 
     // Initialize SMP - start worker cores
     serial_println!("Initializing SMP...");
@@ -229,6 +242,13 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         game::input::poll_keyboard();
         let key_state = game::input::KEY_STATE.lock().clone();
 
+        // Sync local player ID from world if not set
+        if local_player_id.is_none() {
+            if let Some(world) = game::world::GAME_WORLD.lock().as_ref() {
+                local_player_id = world.local_player_id;
+            }
+        }
+
         // Get menu action from key state (edge-triggered)
         let menu_action = get_menu_action(&key_state, &prev_key_state);
         prev_key_state = key_state.clone();
@@ -259,7 +279,9 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                         local_player_id = {
                             let mut world = game::world::GAME_WORLD.lock();
                             if let Some(w) = world.as_mut() {
-                                w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000)
+                                let id = w.add_player("LocalPlayer", smoltcp::wire::Ipv4Address::new(127, 0, 0, 1), 5000);
+                                w.local_player_id = id;
+                                id
                             } else {
                                 None
                             }
@@ -290,6 +312,30 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                         fb.present();
                     }
                 }
+                // Draw cursor and present
+                {
+                    let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+                    if let Some(fb) = fb_guard.as_ref() {
+                        let mouse = game::input::get_mouse_state();
+                        graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
+                        fb.present();
+                    }
+                }
+            }
+
+            GameState::ServerSelect => {
+                // Update server select screen
+                if let Some(new_state) = server_select_screen.update(menu_action) {
+                    set_state(new_state);
+                    
+                    // If returning to matchmaking or starting, re-init world if needed
+                    // handled by update() setting network mode
+                }
+
+                // Render server select
+                render_menu_frame(fb_width, fb_height, |ctx| {
+                    server_select_screen.draw(ctx, fb_width, fb_height);
+                });
             }
 
             GameState::Settings => {
@@ -888,7 +934,52 @@ fn render_game_frame(
             };
             let alive = world.players.iter().filter(|p| p.health > 0).count();
             let total = world.players.len();
+            let total = world.players.len();
             font::draw_hud(health, shield as u32, alive, total, fb_width, fb_height);
+
+            // Render name tags
+            if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+                if let Some(fb) = fb_guard.as_ref() {
+                    for player in &world.players {
+                        if !player.is_alive() || player.phase == PlayerPhase::OnBus {
+                            continue;
+                        }
+
+                        // Don't draw own name tag
+                        if let Some(local_id) = local_player_id {
+                            if player.id == local_id {
+                                continue;
+                            }
+                        }
+
+                        // Project position
+                        let head_pos = player.position + Vec3::new(0.0, 2.2, 0.0);
+                        let model = Mat4::IDENTITY; // World space
+                        if let Some(screen_pos) = graphics::pipeline::project_point(
+                            head_pos,
+                            &model,
+                            &view,
+                            projection,
+                            fb_width as f32,
+                            fb_height as f32
+                        ) {
+                            // Check distance for scaling/culling
+                            // screen_pos.z is NDC depth (0-1).
+                            if screen_pos.z >= 0.0 && screen_pos.z <= 1.0 {
+                                let name = &player.name;
+                                let color = crate::graphics::ui::colors::WHITE;
+                                font::draw_string_centered_raw(
+                                    fb,
+                                    screen_pos.y as usize,
+                                    name,
+                                    color,
+                                    1
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

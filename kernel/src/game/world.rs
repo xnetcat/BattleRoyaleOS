@@ -11,6 +11,14 @@ use glam::Vec3;
 use protocol::packets::{ClientInput, PlayerState, WorldStateDelta};
 use smoltcp::wire::Ipv4Address;
 use spin::Mutex;
+use alloc::string::String;
+
+/// Kill feed entry
+#[derive(Clone)]
+pub struct KillFeedEntry {
+    pub message: String,
+    pub timer: f32,
+}
 
 /// Game world
 pub struct GameWorld {
@@ -24,6 +32,12 @@ pub struct GameWorld {
 
     // Delta tracking for network updates
     changed_players: Vec<u8>,
+
+    // Local player ID (for client)
+    pub local_player_id: Option<u8>,
+
+    // Kill feed
+    pub kill_feed: Vec<KillFeedEntry>,
 }
 
 impl GameWorld {
@@ -37,6 +51,8 @@ impl GameWorld {
             map: GameMap::new(12345), // Fixed seed for now
             is_server,
             changed_players: Vec::new(),
+            local_player_id: None,
+            kill_feed: Vec::new(),
         }
     }
 
@@ -107,13 +123,19 @@ impl GameWorld {
 
         // Update players
         for player in &mut self.players {
-            player.update(dt);
+            player.update(dt, &self.buildings);
 
             // Storm damage (no attacker)
             if player.is_alive() && !self.storm.contains(player.position) {
                 player.take_damage(self.storm.damage_per_tick(), None);
             }
         }
+
+        // Update kill feed timers
+        self.kill_feed.retain_mut(|entry| {
+            entry.timer -= dt;
+            entry.timer > 0.0
+        });
 
         // Update storm
         self.storm.update(dt);

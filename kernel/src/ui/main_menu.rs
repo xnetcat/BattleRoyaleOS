@@ -43,7 +43,7 @@ impl MainMenuScreen {
             MenuAction::Down => self.buttons.select_next(),
             MenuAction::Select => {
                 match MainMenuOption::from_index(self.buttons.selected_index) {
-                    MainMenuOption::Play => return Some(GameState::Matchmaking { elapsed_secs: 0 }),
+                    MainMenuOption::Play => return Some(GameState::ServerSelect),
                     MainMenuOption::Settings => return Some(GameState::Settings),
                     MainMenuOption::Customization => return Some(GameState::Customization),
                     MainMenuOption::Quit => {

@@ -1,13 +1,14 @@
 //! Network stack wrapper using smoltcp
 
 use super::device::E1000Device;
-use crate::drivers::e1000::E1000_DEVICE;
+use crate::drivers::e1000::{E1000_DEVICE, DeviceStats};
 use crate::serial_println;
 use alloc::vec;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::socket::udp::{self, PacketBuffer, PacketMetadata};
+use smoltcp::socket::udp::{self, PacketBuffer as UdpPacketBuffer, PacketMetadata as UdpPacketMetadata};
+use smoltcp::socket::icmp::{self, PacketBuffer as IcmpPacketBuffer, PacketMetadata as IcmpPacketMetadata};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address, Icmpv4Repr, Icmpv4Packet};
 use spin::Mutex;
 
 /// Network stack state
@@ -16,6 +17,7 @@ pub struct NetworkStack {
     pub device: E1000Device,
     pub sockets: SocketSet<'static>,
     pub udp_handle: Option<SocketHandle>,
+    pub icmp_handle: Option<SocketHandle>,
 }
 
 impl NetworkStack {
@@ -40,25 +42,38 @@ impl NetworkStack {
             .ok();
 
         // Create socket set
-        let sockets = SocketSet::new(vec![]);
+        let mut sockets = SocketSet::new(vec![]);
+
+        // Create ICMP socket
+        let rx_buffer = IcmpPacketBuffer::new(
+            vec![IcmpPacketMetadata::EMPTY; 8],
+            vec![0; 256],
+        );
+        let tx_buffer = IcmpPacketBuffer::new(
+            vec![IcmpPacketMetadata::EMPTY; 8],
+            vec![0; 256],
+        );
+        let icmp_socket = icmp::Socket::new(rx_buffer, tx_buffer);
+        let icmp_handle = Some(sockets.add(icmp_socket));
 
         Self {
             interface,
             device,
             sockets,
             udp_handle: None,
+            icmp_handle,
         }
     }
 
     /// Add a UDP socket for game protocol
     pub fn add_udp_socket(&mut self, port: u16) -> SocketHandle {
         // Create UDP socket buffers
-        let rx_buffer = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; 64],
+        let rx_buffer = UdpPacketBuffer::new(
+            vec![UdpPacketMetadata::EMPTY; 64],
             vec![0; 65535],
         );
-        let tx_buffer = PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; 64],
+        let tx_buffer = UdpPacketBuffer::new(
+            vec![UdpPacketMetadata::EMPTY; 64],
             vec![0; 65535],
         );
 
@@ -106,6 +121,42 @@ impl NetworkStack {
         }
         None
     }
+
+    /// Check link status
+    pub fn link_status(&self) -> bool {
+        let device = E1000_DEVICE.lock();
+        if let Some(dev) = device.as_ref() {
+            dev.link_status()
+        } else {
+            false
+        }
+    }
+
+    /// Get network statistics
+    pub fn stats(&self) -> DeviceStats {
+        let device = E1000_DEVICE.lock();
+        if let Some(dev) = device.as_ref() {
+            dev.get_stats()
+        } else {
+            DeviceStats::default()
+        }
+    }
+}
+
+/// Compute Internet Checksum
+pub fn checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    for chunk in data.chunks(2) {
+        let mut part = u16::from(chunk[0]) as u32;
+        if chunk.len() > 1 {
+            part += (u16::from(chunk[1]) as u32) << 8;
+        }
+        sum += part;
+    }
+    while (sum >> 16) > 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !sum as u16
 }
 
 /// Global network stack

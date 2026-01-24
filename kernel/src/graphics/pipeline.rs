@@ -156,3 +156,45 @@ pub fn transform_and_bin(
     // Create ScreenTriangle with pre-computed edge coefficients
     ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32)
 }
+
+/// Project a point from world space to screen space
+/// Returns (x, y, depth) in screen coordinates, or None if behind camera
+pub fn project_point(
+    position: Vec3,
+    model: &Mat4,
+    view: &Mat4,
+    projection: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+) -> Option<Vec3> {
+    let vertex = Vertex {
+        position,
+        normal: Vec3::ZERO,
+        color: Vec3::ZERO,
+        uv: glam::Vec2::ZERO,
+    };
+    
+    let transformed = transform_vertex(&vertex, model, view, projection, fb_width, fb_height);
+    
+    // Check if behind camera or clipped (z < 0 is behind near plane in ndc if simplified, but here z is 1/w)
+    // Actually transform_vertex returns screen_z = 1/w.
+    // If w < 0, it's behind the camera.
+    // But transform_vertex assumes valid w for division.
+    // Let's check `w` manually here.
+    
+    let world_pos = *model * Vec4::new(position.x, position.y, position.z, 1.0);
+    let view_pos = *view * world_pos;
+    let clip_pos = *projection * view_pos;
+    
+    if clip_pos.w <= 0.0 {
+        return None;
+    }
+    
+    let ndc = Vec3::new(clip_pos.x / clip_pos.w, clip_pos.y / clip_pos.w, clip_pos.z / clip_pos.w);
+    
+    // Viewport transform
+    let screen_x = (ndc.x + 1.0) * 0.5 * fb_width;
+    let screen_y = (1.0 - ndc.y) * 0.5 * fb_height;
+    
+    Some(Vec3::new(screen_x, screen_y, ndc.z))
+}

@@ -4,6 +4,7 @@ use super::stack::NETWORK_STACK;
 use crate::game::world::GAME_WORLD;
 use crate::serial_println;
 use alloc::vec::Vec;
+use alloc::string::String;
 use protocol::packets::{ClientInput, Packet, PlayerState, WorldStateDelta};
 use smoltcp::wire::Ipv4Address;
 
@@ -43,11 +44,39 @@ fn handle_packet(src_ip: Ipv4Address, src_port: u16, packet: Packet) {
                 }
             }
         }
+        Packet::JoinResponse { player_id } => {
+            serial_println!("NET: Joined game with ID {}", player_id);
+            if let Some(world) = GAME_WORLD.lock().as_mut() {
+                world.local_player_id = Some(player_id);
+            }
+        }
         Packet::WorldStateDelta(delta) => {
             // Client received world update - apply interpolation
             if let Some(world) = GAME_WORLD.lock().as_mut() {
-                world.apply_delta(&delta);
+                if !world.is_server {
+                    world.apply_delta(&delta);
+                }
             }
+        }
+        Packet::Discovery => {
+            if let Some(world) = GAME_WORLD.lock().as_ref() {
+                if world.is_server {
+                    let count = world.alive_count() as u8;
+                    send_discovery_response(src_ip, src_port, "BattleRoyale Server", count);
+                }
+            }
+        }
+        Packet::DiscoveryResponse {
+            server_name,
+            player_count,
+        } => {
+            serial_println!(
+                "NET: Found server '{}' with {} players at {}",
+                server_name,
+                player_count,
+                src_ip
+            );
+            // TODO: Add to server list in UI
         }
         _ => {}
     }
@@ -60,6 +89,30 @@ fn send_join_response(dest_ip: Ipv4Address, dest_port: u16, player_id: u8) {
 
     if let Some(stack) = NETWORK_STACK.lock().as_mut() {
         stack.send_udp(dest_ip, dest_port, &data);
+    }
+}
+
+/// Send discovery response
+fn send_discovery_response(dest_ip: Ipv4Address, dest_port: u16, name: &str, count: u8) {
+    let packet = Packet::DiscoveryResponse {
+        server_name: String::from(name),
+        player_count: count,
+    };
+    let data = packet.encode();
+
+    if let Some(stack) = NETWORK_STACK.lock().as_mut() {
+        stack.send_udp(dest_ip, dest_port, &data);
+    }
+}
+
+/// Broadcast discovery packet
+pub fn broadcast_discovery() {
+    let packet = Packet::Discovery;
+    let data = packet.encode();
+
+    if let Some(stack) = NETWORK_STACK.lock().as_mut() {
+        // Broadcast to 255.255.255.255
+        stack.send_udp(Ipv4Address::new(255, 255, 255, 255), GAME_PORT, &data);
     }
 }
 

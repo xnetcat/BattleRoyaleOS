@@ -249,7 +249,7 @@ impl Player {
     }
 
     /// Update physics
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
         // Update inventory (weapon timers)
         self.inventory.update(dt);
 
@@ -258,13 +258,13 @@ impl Player {
                 // Position controlled by bus, no physics
             }
             PlayerPhase::Freefall => {
-                self.update_freefall(dt);
+                self.update_freefall(dt, buildings);
             }
             PlayerPhase::Gliding => {
-                self.update_gliding(dt);
+                self.update_gliding(dt, buildings);
             }
             PlayerPhase::Grounded => {
-                self.update_grounded(dt);
+                self.update_grounded(dt, buildings);
             }
             PlayerPhase::Eliminated | PlayerPhase::Spectating => {
                 // No physics when dead/spectating
@@ -273,7 +273,7 @@ impl Player {
     }
 
     /// Update freefall physics
-    fn update_freefall(&mut self, dt: f32) {
+    fn update_freefall(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
         // Calculate fall speed based on dive angle
         let fall_speed = if self.dive_angle > 0.3 {
             FREEFALL_SPEED_DIVE
@@ -285,9 +285,15 @@ impl Player {
 
         self.velocity.y = -fall_speed;
 
-        // Update position
-        self.position += self.velocity * dt;
-
+        // Update position with collision check
+        let next_pos = self.position + self.velocity * dt;
+        if !self.check_building_collision(next_pos, buildings) {
+            self.position = next_pos;
+        } else {
+            // Simple slide? or just stop? Stop for freefall
+            self.velocity = Vec3::ZERO;
+        }
+        
         // Auto-deploy glider at minimum height
         if self.position.y <= AUTO_DEPLOY_HEIGHT {
             self.deploy_glider();
@@ -295,12 +301,18 @@ impl Player {
     }
 
     /// Update gliding physics
-    fn update_gliding(&mut self, dt: f32) {
+    fn update_gliding(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
         // Constant descent rate
         self.velocity.y = -GLIDER_VERTICAL_SPEED;
 
-        // Update position
-        self.position += self.velocity * dt;
+        // Update position with collision check
+        let next_pos = self.position + self.velocity * dt;
+        if !self.check_building_collision(next_pos, buildings) {
+            self.position = next_pos;
+        } else {
+            // Hit something while gliding? Land/Stop
+            self.velocity = Vec3::ZERO;
+        }
 
         // Land when reaching ground
         if self.position.y <= 0.0 {
@@ -309,14 +321,49 @@ impl Player {
     }
 
     /// Update grounded physics
-    fn update_grounded(&mut self, dt: f32) {
+    fn update_grounded(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
         // Apply gravity if not grounded
         if !self.is_grounded() {
             self.velocity.y -= GRAVITY * dt;
         }
 
-        // Update position
-        self.position += self.velocity * dt;
+        // Update position with collision check
+        let next_pos = self.position + self.velocity * dt;
+        
+        // Check X/Z collision separately for sliding
+        let mut final_pos = self.position;
+        
+        // Try moving X
+        let try_x = Vec3::new(next_pos.x, self.position.y, self.position.z);
+        if !self.check_building_collision(try_x, buildings) {
+            final_pos.x = next_pos.x;
+        } else {
+            self.velocity.x = 0.0;
+        }
+        
+        // Try moving Z
+        let try_z = Vec3::new(final_pos.x, self.position.y, next_pos.z);
+        if !self.check_building_collision(try_z, buildings) {
+            final_pos.z = next_pos.z;
+        } else {
+            self.velocity.z = 0.0;
+        }
+        
+        // Try moving Y
+        let try_y = Vec3::new(final_pos.x, next_pos.y, final_pos.z);
+        if !self.check_building_collision(try_y, buildings) {
+            final_pos.y = next_pos.y;
+        } else {
+            // Hit floor or ceiling
+            if self.velocity.y < 0.0 {
+                // Landed on something
+                // Handled implicitly by check or explicit ground check?
+                // For now, simple stop
+            }
+            self.velocity.y = 0.0;
+        }
+        
+        self.position = final_pos;
 
         // Ground collision
         if self.position.y <= 0.0 {
@@ -478,5 +525,55 @@ impl Player {
             self.inventory.selected_slot = 0;
             self.inventory.pickaxe_selected = false;
         }
+    }
+
+    /// Check collision with buildings
+    fn check_building_collision(&self, pos: Vec3, buildings: &[crate::game::building::BuildPiece]) -> bool {
+        let player_radius = 0.5; // Approximate radius
+        let player_height = 1.8;
+
+        for building in buildings {
+            if building.is_destroyed() {
+                continue;
+            }
+
+            // Simple point-in-box check adjusted for player radius
+            // For walls (yaw rotation), transform point to local space
+            
+            // Translate relative to building center
+            let dx = pos.x - building.position.x;
+            let dz = pos.z - building.position.z;
+            
+            // Rotate into local space
+            let cos_r = libm::cosf(-building.rotation);
+            let sin_r = libm::sinf(-building.rotation);
+            let local_x = dx * cos_r - dz * sin_r;
+            let local_z = dx * sin_r + dz * cos_r;
+            let local_y = pos.y - building.position.y; // Assume flat floor/wall center Y?
+            // Actually building.position.y is usually the base or center?
+            // BuildPiece::wall position is center-mid? let's assume centered for AABB logic
+            
+            let dims = building.dimensions();
+            let half_w = dims.x * 0.5 + player_radius;
+            // let half_h = dims.y * 0.5; // Height - check y separately
+            let half_d = dims.z * 0.5 + player_radius;
+            
+            // Check X/Z collision in local space (assume wall is aligned X/Z locally)
+            if local_x.abs() < half_w && local_z.abs() < half_d {
+                // Check Y collision
+                // Wall dimensions logic in building.rs: Wall = 4x4x0.2
+                // If position is centered, Y extends +/- 2.0
+                // Player y is feet position.
+                // Building y is center.
+                let half_h = dims.y * 0.5;
+                let building_min_y = building.position.y - half_h;
+                let building_max_y = building.position.y + half_h;
+                
+                if pos.y + player_height > building_min_y && pos.y < building_max_y {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
