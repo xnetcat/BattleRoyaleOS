@@ -4,6 +4,13 @@ KERNEL := target/x86_64-unknown-none/release/kernel
 ISO := image.iso
 LIMINE_DIR := limine
 
+# QEMU audio device (Intel HDA for broad compatibility)
+# Use coreaudio on macOS, sdl or pulseaudio on Linux
+QEMU_AUDIO = -audiodev coreaudio,id=audio0 -device intel-hda -device hda-duplex,audiodev=audio0
+
+# USB tablet for absolute mouse positioning
+QEMU_MOUSE = -device usb-ehci -device usb-tablet
+
 all: $(ISO)
 
 $(KERNEL): kernel/src/**/*.rs renderer/src/**/*.rs protocol/src/**/*.rs Cargo.toml
@@ -36,6 +43,8 @@ run: $(ISO)
 		-serial stdio \
 		-device e1000,netdev=net0 \
 		-netdev user,id=net0,hostfwd=udp::5000-:5000 \
+		$(QEMU_AUDIO) \
+		$(QEMU_MOUSE) \
 		-no-reboot \
 		-d int,cpu_reset -D qemu.log
 
@@ -48,6 +57,8 @@ run-network: $(ISO)
 		-serial stdio \
 		-device e1000,netdev=net0,mac=52:54:00:12:34:56 \
 		-netdev socket,id=net0,listen=:1234 \
+		$(QEMU_AUDIO) \
+		$(QEMU_MOUSE) \
 		-no-reboot
 
 run-network-client: $(ISO)
@@ -59,6 +70,8 @@ run-network-client: $(ISO)
 		-serial stdio \
 		-device e1000,netdev=net0,mac=52:54:00:12:34:57 \
 		-netdev socket,id=net0,connect=127.0.0.1:1234 \
+		$(QEMU_AUDIO) \
+		$(QEMU_MOUSE) \
 		-no-reboot
 
 clean:
