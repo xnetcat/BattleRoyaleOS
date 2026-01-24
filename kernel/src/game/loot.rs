@@ -189,6 +189,11 @@ impl LootManager {
         }
     }
 
+    /// Get iterator over active drops
+    pub fn get_active_drops(&self) -> impl Iterator<Item = &LootDrop> {
+        self.drops.iter().filter_map(|d| d.as_ref())
+    }
+
     /// Spawn a specific loot drop
     pub fn spawn_drop(&mut self, position: Vec3, item: LootItem, from_player: bool) -> Option<u16> {
         // Find empty slot

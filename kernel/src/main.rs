@@ -201,9 +201,20 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let wall_mesh = mesh::create_wall_mesh(Vec3::new(0.6, 0.5, 0.4));
     let bus_mesh = mesh::create_battle_bus_mesh();
 
-    serial_println!("Meshes: terrain={} player={} wall={} bus={}",
+    // Additional meshes for complete game rendering
+    let glider_mesh = renderer::voxel_models::create_glider_model(0).to_mesh(0.15);
+    let tree_pine_mesh = renderer::voxel_models::create_pine_tree().to_mesh(0.3);
+    let tree_oak_mesh = renderer::voxel_models::create_oak_tree().to_mesh(0.3);
+    let rock_mesh = renderer::voxel_models::create_rock(0).to_mesh(0.25);
+    let chest_mesh = renderer::voxel_models::create_chest().to_mesh(0.12);
+    let house_mesh = renderer::map_mesh::create_house_mesh_simple(Vec3::new(0.7, 0.6, 0.5));
+    let storm_wall_mesh = mesh::create_storm_wall(48, 200.0); // 48 segments, 200 units tall
+
+    serial_println!("Meshes: terrain={} player={} wall={} bus={} glider={} tree={} chest={}",
         terrain.triangle_count(), player_mesh.triangle_count(),
-        wall_mesh.triangle_count(), bus_mesh.triangle_count());
+        wall_mesh.triangle_count(), bus_mesh.triangle_count(),
+        glider_mesh.triangle_count(), tree_pine_mesh.triangle_count(),
+        chest_mesh.triangle_count());
 
     // Camera setup
     // Far plane increased to 3000.0 to see across the 2000x2000 map from bus height
@@ -503,6 +514,14 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
                     world.update(1.0 / 60.0);
 
+                    // Transition from BusPhase to InGame when bus finishes or all players have jumped
+                    if current_state == GameState::BusPhase {
+                        let all_jumped = world.players.iter().all(|p| p.phase != PlayerPhase::OnBus);
+                        if !world.bus.active || all_jumped {
+                            set_state(GameState::InGame);
+                        }
+                    }
+
                     // Check for victory condition
                     if let Some(id) = world.check_victory() {
                         set_state(GameState::Victory { winner_id: Some(id) });
@@ -522,6 +541,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 render_game_frame(
                     fb_width, fb_height,
                     &terrain, &player_mesh, &wall_mesh, &bus_mesh,
+                    &glider_mesh, &tree_pine_mesh, &tree_oak_mesh, &rock_mesh,
+                    &chest_mesh, &house_mesh, &storm_wall_mesh,
                     &projection, local_player_id, rotation,
                     current_fps,
                 );
@@ -852,6 +873,13 @@ fn render_game_frame(
     player_mesh: &mesh::Mesh,
     wall_mesh: &mesh::Mesh,
     bus_mesh: &mesh::Mesh,
+    glider_mesh: &mesh::Mesh,
+    tree_pine_mesh: &mesh::Mesh,
+    tree_oak_mesh: &mesh::Mesh,
+    rock_mesh: &mesh::Mesh,
+    chest_mesh: &mesh::Mesh,
+    house_mesh: &mesh::Mesh,
+    storm_wall_mesh: &mesh::Mesh,
     projection: &Mat4,
     local_player_id: Option<u8>,
     rotation: f32,
@@ -864,31 +892,40 @@ fn render_game_frame(
     };
 
     // Clear back buffer and z-buffer (double buffering prevents flicker)
-    render_ctx.clear(rgb(30, 30, 50));
+    render_ctx.clear(rgb(50, 70, 100)); // Sky blue background
     render_ctx.clear_zbuffer();
 
     // Get camera position from local player (or default orbit)
-    let (camera_pos, camera_target) = {
+    let (camera_pos, camera_target, local_player_phase) = {
         let world = game::world::GAME_WORLD.lock();
         if let (Some(w), Some(id)) = (world.as_ref(), local_player_id) {
             if let Some(player) = w.get_player(id) {
-                // Third-person camera behind player
+                // Camera distance based on phase
+                let cam_dist = match player.phase {
+                    PlayerPhase::OnBus => 15.0,
+                    PlayerPhase::Freefall | PlayerPhase::Gliding => 10.0,
+                    _ => 5.0,
+                };
+                let cam_height = match player.phase {
+                    PlayerPhase::OnBus => 5.0,
+                    PlayerPhase::Freefall | PlayerPhase::Gliding => 4.0,
+                    _ => 3.0,
+                };
                 let cam_offset = Vec3::new(
-                    -libm::sinf(player.yaw) * 5.0,
-                    3.0,
-                    -libm::cosf(player.yaw) * 5.0,
+                    -libm::sinf(player.yaw) * cam_dist,
+                    cam_height,
+                    -libm::cosf(player.yaw) * cam_dist,
                 );
                 let pos = player.position + cam_offset;
                 let target = player.position + Vec3::new(0.0, 1.0, 0.0);
-                (pos, target)
+                (pos, target, Some(player.phase))
             } else {
-                // Default orbit camera
                 let dist = 20.0;
-                (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+                (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO, None)
             }
         } else {
             let dist = 20.0;
-            (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO)
+            (Vec3::new(libm::sinf(rotation) * dist, 10.0, libm::cosf(rotation) * dist), Vec3::ZERO, None)
         }
     };
     let view = look_at(camera_pos, camera_target, Vec3::Y);
@@ -913,22 +950,86 @@ fn render_game_frame(
                 bin_mesh(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
             }
 
+            // Render map buildings (from POIs)
+            for i in 0..w.map.building_count {
+                if let Some(building) = &w.map.buildings[i] {
+                    let model = Mat4::from_translation(building.position)
+                        * Mat4::from_rotation_y(building.rotation)
+                        * Mat4::from_scale(Vec3::splat(1.5)); // Scale up buildings
+                    bin_mesh(house_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                }
+            }
+
+            // Render vegetation (trees, rocks) - limit to nearby for performance
+            let render_range = 200.0;
+            for i in 0..w.map.vegetation_count {
+                if let Some(veg) = &w.map.vegetation[i] {
+                    // Distance culling from camera
+                    let dx = veg.position.x - camera_pos.x;
+                    let dz = veg.position.z - camera_pos.z;
+                    if dx * dx + dz * dz > render_range * render_range {
+                        continue;
+                    }
+
+                    let model = Mat4::from_translation(veg.position)
+                        * Mat4::from_scale(Vec3::splat(veg.scale));
+
+                    match veg.veg_type {
+                        game::map::VegetationType::TreePine => {
+                            bin_mesh(tree_pine_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                        }
+                        game::map::VegetationType::TreeOak | game::map::VegetationType::TreeBirch => {
+                            bin_mesh(tree_oak_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                        }
+                        game::map::VegetationType::Rock => {
+                            bin_mesh(rock_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                        }
+                        game::map::VegetationType::Bush => {
+                            let bush_model = model * Mat4::from_scale(Vec3::splat(0.5));
+                            bin_mesh(tree_oak_mesh, &bush_model, &view, projection, fb_width as f32, fb_height as f32);
+                        }
+                    }
+                }
+            }
+
+            // Render loot drops (chests and items)
+            for drop in w.loot.get_active_drops() {
+                let model = Mat4::from_translation(drop.position)
+                    * Mat4::from_rotation_y(rotation * 2.0); // Rotate loot for visibility
+                bin_mesh(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+            }
+
             // Render all players
             for player in &w.players {
                 if !player.is_alive() || player.phase == PlayerPhase::OnBus {
                     continue;
                 }
+
                 let model = Mat4::from_translation(player.position)
                     * Mat4::from_rotation_y(player.yaw);
                 bin_mesh(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+
+                // Render glider for players who are gliding
+                if player.phase == PlayerPhase::Gliding {
+                    let glider_offset = Vec3::new(0.0, 2.5, 0.0); // Above player
+                    let glider_model = Mat4::from_translation(player.position + glider_offset)
+                        * Mat4::from_rotation_y(player.yaw);
+                    bin_mesh(glider_mesh, &glider_model, &view, projection, fb_width as f32, fb_height as f32);
+                }
             }
 
-            // Render buildings
+            // Render player-built buildings
             for building in &w.buildings {
                 let model = Mat4::from_translation(building.position)
                     * Mat4::from_rotation_y(building.rotation);
                 bin_mesh(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
             }
+
+            // Render 3D storm wall
+            // Scale the unit cylinder mesh to match the storm radius
+            let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
+                * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
+            bin_mesh(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);
         }
     }
 
@@ -947,73 +1048,61 @@ fn render_game_frame(
     // 7. Signal render complete (allows worker cores to wait for next frame)
     smp::scheduler::end_render();
 
-    // Drop render context before drawing FPS (font uses its own lock)
+    // Drop render context before drawing 2D UI
     drop(render_ctx);
+
+    // === 2D UI RENDERING ===
 
     // Draw FPS counter
     font::draw_fps(current_fps, fb_width);
 
-    // Draw game HUD (health, materials, alive count)
+    // Draw storm indicator if player is in storm
     {
         let world_guard = game::world::GAME_WORLD.lock();
         if let Some(world) = world_guard.as_ref() {
-            let (health, shield, _materials) = if let Some(id) = local_player_id {
+            if let Some(id) = local_player_id {
                 if let Some(player) = world.get_player(id) {
-                    (player.health, player.shield, player.inventory.materials.total())
-                } else {
-                    (100, 0, 0)
-                }
-            } else {
-                (100, 0, 0)
-            };
-            let alive = world.players.iter().filter(|p| p.health > 0).count();
-            let total = world.players.len();
-            let total = world.players.len();
-            font::draw_hud(health, shield as u32, alive, total, fb_width, fb_height);
-
-            // Render name tags
-            if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
-                if let Some(fb) = fb_guard.as_ref() {
-                    for player in &world.players {
-                        if !player.is_alive() || player.phase == PlayerPhase::OnBus {
-                            continue;
-                        }
-
-                        // Don't draw own name tag
-                        if let Some(local_id) = local_player_id {
-                            if player.id == local_id {
-                                continue;
-                            }
-                        }
-
-                        // Project position
-                        let head_pos = player.position + Vec3::new(0.0, 2.2, 0.0);
-                        let model = Mat4::IDENTITY; // World space
-                        if let Some(screen_pos) = graphics::pipeline::project_point(
-                            head_pos,
-                            &model,
-                            &view,
-                            projection,
-                            fb_width as f32,
-                            fb_height as f32
-                        ) {
-                            // Check distance for scaling/culling
-                            // screen_pos.z is NDC depth (0-1).
-                            if screen_pos.z >= 0.0 && screen_pos.z <= 1.0 {
-                                let name = &player.name;
-                                let color = crate::graphics::ui::colors::WHITE;
-                                font::draw_string_centered_raw(
-                                    fb,
-                                    screen_pos.y as usize,
-                                    name,
-                                    color,
-                                    1
-                                );
-                            }
-                        }
+                    if !world.storm.contains(player.position) {
+                        // Draw storm warning overlay
+                        draw_storm_overlay(fb_width, fb_height);
                     }
                 }
             }
+        }
+    }
+
+    // Draw game HUD (health, shield, materials, alive count)
+    {
+        let world_guard = game::world::GAME_WORLD.lock();
+        if let Some(world) = world_guard.as_ref() {
+            let (health, shield, materials, inventory) = if let Some(id) = local_player_id {
+                if let Some(player) = world.get_player(id) {
+                    (player.health, player.shield, player.inventory.materials.clone(), Some(&player.inventory))
+                } else {
+                    (100, 0, game::inventory::Materials::default(), None)
+                }
+            } else {
+                (100, 0, game::inventory::Materials::default(), None)
+            };
+            let alive = world.players.iter().filter(|p| p.health > 0).count();
+            let total = world.players.len();
+
+            // Draw main HUD
+            font::draw_hud(health, shield as u32, alive, total, fb_width, fb_height);
+
+            // Draw inventory hotbar
+            if let Some(inv) = inventory {
+                draw_inventory_hotbar(inv, fb_width, fb_height);
+            }
+
+            // Draw materials count
+            draw_materials_hud(&materials, fb_width, fb_height);
+
+            // Draw storm timer
+            draw_storm_timer(&world.storm, fb_width, fb_height);
+
+            // Draw minimap with storm circle
+            draw_minimap(local_player_id, world, fb_width, fb_height);
         }
     }
 
@@ -1022,6 +1111,254 @@ fn render_game_frame(
         let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
         if let Some(fb) = fb_guard.as_ref() {
             fb.present();
+        }
+    }
+}
+
+/// Draw storm overlay effect when player is in storm
+fn draw_storm_overlay(fb_width: usize, fb_height: usize) {
+    if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+        if let Some(fb) = fb_guard.as_ref() {
+            // Draw purple tint on edges of screen
+            let purple = rgb(128, 0, 128);
+            let edge_width = 30;
+
+            // Top edge
+            for y in 0..edge_width {
+                let alpha = (edge_width - y) as f32 / edge_width as f32;
+                for x in 0..fb_width {
+                    let idx = y * fb_width + x;
+                    let existing = fb.pixel_at(idx);
+                    let blended = blend_color(existing, purple, alpha * 0.5);
+                    fb.set_pixel_at(idx, blended);
+                }
+            }
+
+            // Bottom edge
+            for y in (fb_height - edge_width)..fb_height {
+                let alpha = (y - (fb_height - edge_width)) as f32 / edge_width as f32;
+                for x in 0..fb_width {
+                    let idx = y * fb_width + x;
+                    let existing = fb.pixel_at(idx);
+                    let blended = blend_color(existing, purple, alpha * 0.5);
+                    fb.set_pixel_at(idx, blended);
+                }
+            }
+        }
+    }
+}
+
+/// Blend two colors
+fn blend_color(base: u32, overlay: u32, alpha: f32) -> u32 {
+    let br = ((base >> 16) & 0xFF) as f32;
+    let bg = ((base >> 8) & 0xFF) as f32;
+    let bb = (base & 0xFF) as f32;
+
+    let or = ((overlay >> 16) & 0xFF) as f32;
+    let og = ((overlay >> 8) & 0xFF) as f32;
+    let ob = (overlay & 0xFF) as f32;
+
+    let r = (br * (1.0 - alpha) + or * alpha) as u32;
+    let g = (bg * (1.0 - alpha) + og * alpha) as u32;
+    let b = (bb * (1.0 - alpha) + ob * alpha) as u32;
+
+    (r << 16) | (g << 8) | b
+}
+
+/// Draw inventory hotbar
+fn draw_inventory_hotbar(inv: &game::inventory::Inventory, fb_width: usize, fb_height: usize) {
+    if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+        if let Some(fb) = fb_guard.as_ref() {
+            let slot_size = 50;
+            let slot_spacing = 5;
+            let total_width = 6 * slot_size + 5 * slot_spacing; // 6 slots (pickaxe + 5 weapons)
+            let start_x = (fb_width - total_width) / 2;
+            let start_y = fb_height - slot_size - 80; // Above health bar
+
+            // Draw pickaxe slot
+            let is_selected = inv.pickaxe_selected;
+            let border_color = if is_selected { rgb(255, 200, 0) } else { rgb(100, 100, 100) };
+            let bg_color = rgb(50, 50, 50);
+
+            draw_slot(fb, start_x, start_y, slot_size, bg_color, border_color);
+            font::draw_string_raw(fb, start_x + 15, start_y + 20, "P", rgb(200, 200, 200), 1);
+
+            // Draw weapon slots
+            for i in 0..5 {
+                let x = start_x + (i + 1) * (slot_size + slot_spacing);
+                let is_selected = !inv.pickaxe_selected && inv.selected_slot == i;
+                let border_color = if is_selected { rgb(255, 200, 0) } else { rgb(100, 100, 100) };
+
+                draw_slot(fb, x, start_y, slot_size, bg_color, border_color);
+
+                // Draw weapon info if slot is filled
+                if let Some(weapon) = &inv.slots[i] {
+                    let rarity_color = match weapon.rarity {
+                        game::weapon::Rarity::Common => rgb(150, 150, 150),
+                        game::weapon::Rarity::Uncommon => rgb(50, 200, 50),
+                        game::weapon::Rarity::Rare => rgb(50, 100, 255),
+                        game::weapon::Rarity::Epic => rgb(200, 50, 200),
+                        game::weapon::Rarity::Legendary => rgb(255, 180, 0),
+                    };
+
+                    // Draw rarity indicator bar at bottom of slot
+                    for dy in (slot_size - 5)..slot_size {
+                        for dx in 2..(slot_size - 2) {
+                            fb.set_pixel(x + dx, start_y + dy, rarity_color);
+                        }
+                    }
+
+                    // Draw weapon type letter
+                    let letter = match weapon.weapon_type {
+                        game::weapon::WeaponType::Pistol => "Pi",
+                        game::weapon::WeaponType::Shotgun => "SG",
+                        game::weapon::WeaponType::AssaultRifle => "AR",
+                        game::weapon::WeaponType::Smg => "SM",
+                        game::weapon::WeaponType::Sniper => "SR",
+                        game::weapon::WeaponType::Pickaxe => "PX",
+                    };
+                    font::draw_string_raw(fb, x + 10, start_y + 15, letter, rgb(255, 255, 255), 1);
+
+                    // Draw ammo count
+                    let ammo_str = alloc::format!("{}", weapon.ammo);
+                    font::draw_string_raw(fb, x + 15, start_y + 32, &ammo_str, rgb(200, 200, 200), 1);
+                }
+
+                // Draw slot number
+                let num_str = alloc::format!("{}", i + 2);
+                font::draw_string_raw(fb, x + 3, start_y + 3, &num_str, rgb(150, 150, 150), 1);
+            }
+        }
+    }
+}
+
+/// Draw a UI slot/box
+fn draw_slot(fb: &graphics::framebuffer::Framebuffer, x: usize, y: usize, size: usize, bg: u32, border: u32) {
+    // Background
+    for dy in 0..size {
+        for dx in 0..size {
+            fb.set_pixel(x + dx, y + dy, bg);
+        }
+    }
+    // Border
+    for dx in 0..size {
+        fb.set_pixel(x + dx, y, border);
+        fb.set_pixel(x + dx, y + size - 1, border);
+    }
+    for dy in 0..size {
+        fb.set_pixel(x, y + dy, border);
+        fb.set_pixel(x + size - 1, y + dy, border);
+    }
+}
+
+/// Draw materials HUD
+fn draw_materials_hud(materials: &game::inventory::Materials, fb_width: usize, fb_height: usize) {
+    if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+        if let Some(fb) = fb_guard.as_ref() {
+            let x = fb_width - 150;
+            let y = fb_height - 100;
+
+            // Wood
+            let wood_str = alloc::format!("W: {}", materials.wood);
+            font::draw_string_raw(fb, x, y, &wood_str, rgb(180, 120, 60), 1);
+
+            // Brick
+            let brick_str = alloc::format!("B: {}", materials.brick);
+            font::draw_string_raw(fb, x, y + 20, &brick_str, rgb(180, 80, 80), 1);
+
+            // Metal
+            let metal_str = alloc::format!("M: {}", materials.metal);
+            font::draw_string_raw(fb, x, y + 40, &metal_str, rgb(150, 150, 170), 1);
+        }
+    }
+}
+
+/// Draw storm timer
+fn draw_storm_timer(storm: &game::storm::Storm, fb_width: usize, _fb_height: usize) {
+    if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+        if let Some(fb) = fb_guard.as_ref() {
+            let phase_str = if storm.shrinking {
+                alloc::format!("STORM CLOSING: {:.0}s", storm.timer)
+            } else {
+                alloc::format!("SAFE ZONE: {:.0}s", storm.timer)
+            };
+
+            let x = (fb_width - phase_str.len() * 8) / 2;
+            let color = if storm.shrinking { rgb(200, 50, 200) } else { rgb(255, 255, 255) };
+            font::draw_string_raw(fb, x, 50, &phase_str, color, 1);
+        }
+    }
+}
+
+/// Draw minimap
+fn draw_minimap(local_player_id: Option<u8>, world: &game::world::GameWorld, fb_width: usize, _fb_height: usize) {
+    if let Some(fb_guard) = graphics::framebuffer::FRAMEBUFFER.try_lock() {
+        if let Some(fb) = fb_guard.as_ref() {
+            let map_size = 150;
+            let map_x = fb_width - map_size - 20;
+            let map_y = 20;
+
+            // Draw map background
+            for dy in 0..map_size {
+                for dx in 0..map_size {
+                    fb.set_pixel(map_x + dx, map_y + dy, rgb(20, 40, 20));
+                }
+            }
+
+            // Draw map border
+            for dx in 0..map_size {
+                fb.set_pixel(map_x + dx, map_y, rgb(100, 100, 100));
+                fb.set_pixel(map_x + dx, map_y + map_size - 1, rgb(100, 100, 100));
+            }
+            for dy in 0..map_size {
+                fb.set_pixel(map_x, map_y + dy, rgb(100, 100, 100));
+                fb.set_pixel(map_x + map_size - 1, map_y + dy, rgb(100, 100, 100));
+            }
+
+            // Scale: map is 2000 units, minimap is 150 pixels
+            let scale = map_size as f32 / 2000.0;
+            let offset = 1000.0; // Center offset
+
+            // Draw storm circle
+            let storm_cx = ((world.storm.center.x + offset) * scale) as i32;
+            let storm_cz = ((world.storm.center.z + offset) * scale) as i32;
+            let storm_r = (world.storm.radius * scale) as i32;
+
+            // Draw circle outline (simplified)
+            for angle in 0..64 {
+                let a = (angle as f32 / 64.0) * core::f32::consts::TAU;
+                let px = storm_cx + (libm::cosf(a) * storm_r as f32) as i32;
+                let py = storm_cz + (libm::sinf(a) * storm_r as f32) as i32;
+                if px >= 0 && px < map_size as i32 && py >= 0 && py < map_size as i32 {
+                    fb.set_pixel(map_x + px as usize, map_y + py as usize, rgb(255, 255, 255));
+                }
+            }
+
+            // Draw player positions
+            for player in &world.players {
+                if !player.is_alive() {
+                    continue;
+                }
+                let px = ((player.position.x + offset) * scale) as usize;
+                let py = ((player.position.z + offset) * scale) as usize;
+
+                if px < map_size && py < map_size {
+                    let color = if Some(player.id) == local_player_id {
+                        rgb(0, 255, 0) // Green for local player
+                    } else {
+                        rgb(255, 0, 0) // Red for others
+                    };
+
+                    // Draw 3x3 dot
+                    for dx in 0..3 {
+                        for dy in 0..3 {
+                            if px + dx < map_size && py + dy < map_size {
+                                fb.set_pixel(map_x + px + dx, map_y + py + dy, color);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

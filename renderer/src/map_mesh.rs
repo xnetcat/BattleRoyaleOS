@@ -497,3 +497,38 @@ pub fn create_palm_tree_mesh(scale: f32) -> Mesh {
 
     mesh
 }
+
+/// Create a simple house mesh (for POI buildings)
+pub fn create_house_mesh_simple(color: Vec3) -> Mesh {
+    let mut mesh = Mesh::new();
+
+    let wall_color = color;
+    let roof_color = Vec3::new(0.5, 0.3, 0.2);
+
+    // Scale
+    let w = 5.0;
+    let h = 4.0;
+    let d = 5.0;
+
+    // Walls
+    add_box_faces(&mut mesh, Vec3::ZERO, Vec3::new(w * 2.0, h, d * 2.0), wall_color, false);
+
+    // Roof (simple pyramid)
+    let roof_base_y = h;
+    let roof_peak_y = h + 2.5;
+
+    let base = mesh.vertices.len() as u32;
+    mesh.vertices.push(crate::vertex::Vertex::new(Vec3::new(-w, roof_base_y, -d), Vec3::Y, roof_color, Vec2::ZERO));
+    mesh.vertices.push(crate::vertex::Vertex::new(Vec3::new(w, roof_base_y, -d), Vec3::Y, roof_color, Vec2::ZERO));
+    mesh.vertices.push(crate::vertex::Vertex::new(Vec3::new(w, roof_base_y, d), Vec3::Y, roof_color, Vec2::ZERO));
+    mesh.vertices.push(crate::vertex::Vertex::new(Vec3::new(-w, roof_base_y, d), Vec3::Y, roof_color, Vec2::ZERO));
+    mesh.vertices.push(crate::vertex::Vertex::new(Vec3::new(0.0, roof_peak_y, 0.0), Vec3::Y, roof_color * 0.9, Vec2::ZERO));
+
+    // Roof triangles
+    mesh.indices.extend([base, base + 1, base + 4]); // Front slope
+    mesh.indices.extend([base + 1, base + 2, base + 4]); // Right slope
+    mesh.indices.extend([base + 2, base + 3, base + 4]); // Back slope
+    mesh.indices.extend([base + 3, base, base + 4]); // Left slope
+
+    mesh
+}

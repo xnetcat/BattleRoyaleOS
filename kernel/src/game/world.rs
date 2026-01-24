@@ -367,9 +367,10 @@ impl GameWorld {
             }
         }
 
-        // Update players
+        // Update players with terrain height
         for player in &mut self.players {
-            player.update(dt, &self.buildings);
+            let terrain_height = self.map.get_height_at(player.position.x, player.position.z);
+            player.update(dt, &self.buildings, terrain_height);
 
             // Storm damage (no attacker)
             if player.is_alive() && !self.storm.contains(player.position) {
@@ -613,11 +614,10 @@ impl GameWorld {
             // Start bot at a random position on the map
             let angle = (i as f32 / count as f32) * core::f32::consts::TAU;
             let dist = 200.0 + (i as f32 % 5.0) * 100.0;
-            bot.position = Vec3::new(
-                libm::cosf(angle) * dist,
-                0.0,
-                libm::sinf(angle) * dist,
-            );
+            let bot_x = libm::cosf(angle) * dist;
+            let bot_z = libm::sinf(angle) * dist;
+            let terrain_height = self.map.get_height_at(bot_x, bot_z);
+            bot.position = Vec3::new(bot_x, terrain_height, bot_z);
             bot.phase = PlayerPhase::Grounded;
 
             self.players.push(bot);

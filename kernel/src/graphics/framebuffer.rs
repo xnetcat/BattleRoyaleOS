@@ -62,6 +62,33 @@ impl Framebuffer {
         }
     }
 
+    /// Alias for put_pixel
+    #[inline]
+    pub fn set_pixel(&self, x: usize, y: usize, color: u32) {
+        self.put_pixel(x, y, color);
+    }
+
+    /// Get pixel at linear index
+    #[inline]
+    pub fn pixel_at(&self, idx: usize) -> u32 {
+        if idx < self.back_buffer.len() {
+            self.back_buffer[idx]
+        } else {
+            0
+        }
+    }
+
+    /// Set pixel at linear index
+    #[inline]
+    pub fn set_pixel_at(&self, idx: usize, color: u32) {
+        if idx < self.back_buffer.len() {
+            unsafe {
+                let ptr = self.back_buffer.as_ptr() as *mut u32;
+                *ptr.add(idx) = color;
+            }
+        }
+    }
+
     /// Clear the back buffer with a color (optimized 64-bit writes)
     pub fn clear(&self, color: u32) {
         let row_pixels = self.pitch / 4;

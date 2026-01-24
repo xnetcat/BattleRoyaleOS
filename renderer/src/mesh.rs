@@ -490,6 +490,48 @@ pub fn create_palm_tree(height: f32, frond_count: usize) -> Mesh {
     mesh
 }
 
+/// Create a cylindrical storm wall mesh
+/// segments: number of vertical strips around the cylinder
+/// height: how tall the wall is
+pub fn create_storm_wall(segments: usize, height: f32) -> Mesh {
+    let mut mesh = Mesh::new();
+
+    // Storm wall is semi-transparent purple
+    let storm_color = Vec3::new(0.5, 0.1, 0.6);
+    let storm_color_light = Vec3::new(0.7, 0.2, 0.8);
+
+    // Create vertical strips - only the outside faces (viewed from inside the circle)
+    for i in 0..segments {
+        let angle1 = (i as f32 / segments as f32) * core::f32::consts::TAU;
+        let angle2 = ((i + 1) as f32 / segments as f32) * core::f32::consts::TAU;
+
+        // Unit circle positions (will be scaled by radius at render time)
+        let x1 = libm::cosf(angle1);
+        let z1 = libm::sinf(angle1);
+        let x2 = libm::cosf(angle2);
+        let z2 = libm::sinf(angle2);
+
+        // Normal pointing inward (toward center)
+        let normal = Vec3::new(-(x1 + x2) * 0.5, 0.0, -(z1 + z2) * 0.5).normalize();
+
+        // Alternate colors for visual effect
+        let color = if i % 2 == 0 { storm_color } else { storm_color_light };
+
+        let base = mesh.vertices.len() as u32;
+        // Bottom vertices
+        mesh.vertices.push(Vertex::new(Vec3::new(x1, 0.0, z1), normal, color * 0.6, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x2, 0.0, z2), normal, color * 0.6, Vec2::ZERO));
+        // Top vertices
+        mesh.vertices.push(Vertex::new(Vec3::new(x2, height, z2), normal, color, Vec2::ZERO));
+        mesh.vertices.push(Vertex::new(Vec3::new(x1, height, z1), normal, color, Vec2::ZERO));
+
+        // Two triangles for this strip
+        mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    mesh
+}
+
 /// Helper: Create a box with given dimensions and offset
 fn create_box(size: Vec3, offset: Vec3, color: Vec3) -> Mesh {
     let mut mesh = Mesh::new();

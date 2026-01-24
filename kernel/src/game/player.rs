@@ -249,7 +249,7 @@ impl Player {
     }
 
     /// Update physics
-    pub fn update(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
+    pub fn update(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece], terrain_height: f32) {
         // Update inventory (weapon timers)
         self.inventory.update(dt);
 
@@ -258,13 +258,13 @@ impl Player {
                 // Position controlled by bus, no physics
             }
             PlayerPhase::Freefall => {
-                self.update_freefall(dt, buildings);
+                self.update_freefall(dt, buildings, terrain_height);
             }
             PlayerPhase::Gliding => {
-                self.update_gliding(dt, buildings);
+                self.update_gliding(dt, buildings, terrain_height);
             }
             PlayerPhase::Grounded => {
-                self.update_grounded(dt, buildings);
+                self.update_grounded(dt, buildings, terrain_height);
             }
             PlayerPhase::Eliminated | PlayerPhase::Spectating => {
                 // No physics when dead/spectating
@@ -273,7 +273,7 @@ impl Player {
     }
 
     /// Update freefall physics
-    fn update_freefall(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
+    fn update_freefall(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece], terrain_height: f32) {
         // Calculate fall speed based on dive angle
         let fall_speed = if self.dive_angle > 0.3 {
             FREEFALL_SPEED_DIVE
@@ -290,18 +290,19 @@ impl Player {
         if !self.check_building_collision(next_pos, buildings) {
             self.position = next_pos;
         } else {
-            // Simple slide? or just stop? Stop for freefall
+            // Hit a building while freefalling - stop
             self.velocity = Vec3::ZERO;
         }
-        
-        // Auto-deploy glider at minimum height
-        if self.position.y <= AUTO_DEPLOY_HEIGHT {
+
+        // Auto-deploy glider at minimum height above terrain
+        let height_above_ground = self.position.y - terrain_height;
+        if height_above_ground <= AUTO_DEPLOY_HEIGHT {
             self.deploy_glider();
         }
     }
 
     /// Update gliding physics
-    fn update_gliding(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
+    fn update_gliding(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece], terrain_height: f32) {
         // Constant descent rate
         self.velocity.y = -GLIDER_VERTICAL_SPEED;
 
@@ -310,29 +311,33 @@ impl Player {
         if !self.check_building_collision(next_pos, buildings) {
             self.position = next_pos;
         } else {
-            // Hit something while gliding? Land/Stop
+            // Hit something while gliding - land on it
             self.velocity = Vec3::ZERO;
         }
 
-        // Land when reaching ground
-        if self.position.y <= 0.0 {
+        // Land when reaching terrain
+        if self.position.y <= terrain_height + 0.1 {
+            self.position.y = terrain_height;
             self.land();
         }
     }
 
     /// Update grounded physics
-    fn update_grounded(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece]) {
-        // Apply gravity if not grounded
-        if !self.is_grounded() {
+    fn update_grounded(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece], terrain_height: f32) {
+        // Check if we're on the ground
+        let on_ground = self.position.y <= terrain_height + 0.1;
+
+        // Apply gravity if not on ground
+        if !on_ground {
             self.velocity.y -= GRAVITY * dt;
         }
 
         // Update position with collision check
         let next_pos = self.position + self.velocity * dt;
-        
+
         // Check X/Z collision separately for sliding
         let mut final_pos = self.position;
-        
+
         // Try moving X
         let try_x = Vec3::new(next_pos.x, self.position.y, self.position.z);
         if !self.check_building_collision(try_x, buildings) {
@@ -340,7 +345,7 @@ impl Player {
         } else {
             self.velocity.x = 0.0;
         }
-        
+
         // Try moving Z
         let try_z = Vec3::new(final_pos.x, self.position.y, next_pos.z);
         if !self.check_building_collision(try_z, buildings) {
@@ -348,34 +353,29 @@ impl Player {
         } else {
             self.velocity.z = 0.0;
         }
-        
+
         // Try moving Y
         let try_y = Vec3::new(final_pos.x, next_pos.y, final_pos.z);
         if !self.check_building_collision(try_y, buildings) {
             final_pos.y = next_pos.y;
         } else {
             // Hit floor or ceiling
-            if self.velocity.y < 0.0 {
-                // Landed on something
-                // Handled implicitly by check or explicit ground check?
-                // For now, simple stop
-            }
             self.velocity.y = 0.0;
         }
-        
+
         self.position = final_pos;
 
-        // Ground collision
-        if self.position.y <= 0.0 {
-            self.position.y = 0.0;
+        // Ground collision - snap to terrain
+        if self.position.y <= terrain_height {
+            self.position.y = terrain_height;
             self.velocity.y = 0.0;
             self.flags &= !PlayerStateFlags::JUMPING;
         }
     }
 
-    /// Check if player is on the ground
+    /// Check if player is on the ground (approximate - actual terrain check done in update)
     pub fn is_grounded(&self) -> bool {
-        self.position.y <= 0.1 && self.phase == PlayerPhase::Grounded
+        self.phase == PlayerPhase::Grounded && self.velocity.y.abs() < 0.1
     }
 
     /// Exit the battle bus
@@ -397,7 +397,7 @@ impl Player {
     /// Land on the ground
     fn land(&mut self) {
         self.phase = PlayerPhase::Grounded;
-        self.position.y = 0.0;
+        // Note: position.y is already set to terrain_height by the caller
         self.velocity = Vec3::ZERO;
         self.flags &= !PlayerStateFlags::PARACHUTE;
     }
