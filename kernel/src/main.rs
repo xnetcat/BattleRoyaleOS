@@ -387,6 +387,10 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
 
                 if countdown_timer <= 0.0 {
                     set_state(GameState::BusPhase);
+                    // Spawn bots for single-player mode
+                    if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                        world.spawn_bots(10); // 10 bots for a battle
+                    }
                 } else {
                     let new_secs = libm::ceilf(countdown_timer) as u8;
                     if new_secs != remaining_secs {
@@ -464,15 +468,45 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                     // Apply input to game world
                     if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
                         world.apply_input(id, &input);
+
+                        // Handle weapon slot selection (1-5 keys)
+                        if let Some(player) = world.get_player_mut(id) {
+                            if key_state.one && !prev_key_state.one {
+                                player.inventory.select_pickaxe();
+                            } else if key_state.two && !prev_key_state.two {
+                                player.inventory.select_slot(0);
+                            } else if key_state.three && !prev_key_state.three {
+                                player.inventory.select_slot(1);
+                            } else if key_state.four && !prev_key_state.four {
+                                player.inventory.select_slot(2);
+                            } else if key_state.five && !prev_key_state.five {
+                                player.inventory.select_slot(3);
+                            }
+
+                            // Handle reload (R key)
+                            if key_state.r && !prev_key_state.r {
+                                player.inventory.reload_current();
+                            }
+                        }
+
+                        // Handle loot pickup (E key)
+                        if key_state.e && !prev_key_state.e {
+                            world.try_pickup(id);
+                        }
                     }
                 }
 
                 // Reset mouse deltas after use
                 game::input::reset_mouse_deltas();
 
-                // Update game world physics
+                // Update game world physics and check for victory
                 if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
                     world.update(1.0 / 60.0);
+
+                    // Check for victory condition
+                    if let Some(id) = world.check_victory() {
+                        set_state(GameState::Victory { winner_id: Some(id) });
+                    }
                 }
 
                 // Process network (less frequently)

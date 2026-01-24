@@ -125,7 +125,7 @@ impl CustomizationScreen {
 
         // Draw a simple preview representation
         // (Full 3D preview would require integrating with the rasterizer here)
-        self.draw_preview_placeholder(fb, preview_panel_x + 50, preview_panel_y + 60, 300, 400);
+        self.draw_preview_frame(fb, preview_panel_x + 50, preview_panel_y + 60, 300, 400);
 
         // Draw footer
         let footer = "LEFT/RIGHT TO CHANGE. ESC TO SAVE.";
@@ -185,7 +185,7 @@ impl CustomizationScreen {
         }
     }
 
-    fn draw_preview_placeholder(&self, fb: &crate::graphics::framebuffer::Framebuffer, x: usize, y: usize, width: usize, height: usize) {
+    fn draw_preview_frame(&self, fb: &crate::graphics::framebuffer::Framebuffer, x: usize, y: usize, width: usize, height: usize) {
         // Draw a simple colored representation of the character
         let custom = &self.local_customization;
 

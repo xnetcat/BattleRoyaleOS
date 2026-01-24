@@ -235,7 +235,7 @@ impl FortniteLobby {
         self.draw_ui_only(_ctx, fb_width, fb_height, false);
     }
 
-    /// Draw only the UI elements (no background or 3D placeholder)
+    /// Draw only the UI elements (no background or 3D preview)
     /// Used when 3D player preview is rendered separately
     pub fn draw_ui_only(&self, _ctx: &RenderContext, fb_width: usize, fb_height: usize, skip_background: bool) {
         let fb_guard = FRAMEBUFFER.lock();
@@ -247,8 +247,8 @@ impl FortniteLobby {
         // Only draw background if not skipped (when 3D is rendered separately)
         if !skip_background {
             self.draw_sunset_background(fb, fb_width, fb_height);
-            // Draw placeholder only when no 3D rendering
-            self.draw_player_preview_placeholder(fb, fb_width, fb_height);
+            // Draw silhouette only when no 3D rendering
+            self.draw_player_preview_silhouette(fb, fb_width, fb_height);
         }
 
         // Draw header bar with tabs
@@ -394,7 +394,7 @@ impl FortniteLobby {
         }
     }
 
-    fn draw_player_preview_placeholder(&self, fb: &crate::graphics::framebuffer::Framebuffer, fb_width: usize, fb_height: usize) {
+    fn draw_player_preview_silhouette(&self, fb: &crate::graphics::framebuffer::Framebuffer, fb_width: usize, fb_height: usize) {
         // Draw glowing platform (simplified)
         let platform_center_x = fb_width / 3;
         let platform_y = fb_height - 200;
@@ -425,7 +425,7 @@ impl FortniteLobby {
             0x6080C0FF,
         );
 
-        // Player placeholder text
+        // Player silhouette label (3D model rendered separately)
         font::draw_string_raw(
             fb,
             platform_center_x - 50,

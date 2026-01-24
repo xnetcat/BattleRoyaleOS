@@ -1,5 +1,6 @@
 //! Game logic
 
+pub mod bot;
 pub mod building;
 pub mod bus;
 pub mod camera;

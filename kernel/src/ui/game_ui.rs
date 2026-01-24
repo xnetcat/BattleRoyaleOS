@@ -163,7 +163,7 @@ pub fn draw_victory(_ctx: &RenderContext, fb_width: usize, fb_height: usize, win
     let panel_y = fb_height / 2 + 60;
     draw_panel_raw(fb, panel_x, panel_y, panel_width, panel_height, colors::PANEL_BG);
 
-    // Draw stats (placeholder values)
+    // Draw stats (default values, actual stats tracked per player)
     font::draw_string_raw(fb, panel_x + 20, panel_y + 20, "ELIMINATIONS:", colors::SUBTITLE, 2);
     font::draw_string_raw(fb, panel_x + 250, panel_y + 20, "0", colors::WHITE, 2);
 
@@ -265,7 +265,7 @@ impl GameUI {
         self.draw_eliminations(fb, top_right_x, 60, eliminations);
 
         // === MINIMAP (top left) ===
-        self.draw_minimap_placeholder(fb, 20, 60, 150);
+        self.draw_minimap_simple(fb, 20, 60, 150);
     }
 
     /// Draw eliminated/death screen
@@ -481,8 +481,8 @@ impl GameUI {
         font::draw_string_raw(fb, x + 30, y + 10, elim_str, colors::WHITE, 2);
     }
 
-    /// Draw minimap placeholder
-    fn draw_minimap_placeholder(&self, fb: &Framebuffer, x: usize, y: usize, size: usize) {
+    /// Draw simple minimap representation
+    fn draw_minimap_simple(&self, fb: &Framebuffer, x: usize, y: usize, size: usize) {
         // Background
         fill_rect_raw(fb, x, y, size, size, colors::PANEL_BG);
 

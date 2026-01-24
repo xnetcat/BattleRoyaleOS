@@ -90,9 +90,9 @@ pub struct Materials {
 impl Default for Materials {
     fn default() -> Self {
         Self {
-            wood: 0,
-            brick: 0,
-            metal: 0,
+            wood: 100,
+            brick: 50,
+            metal: 50,
         }
     }
 }

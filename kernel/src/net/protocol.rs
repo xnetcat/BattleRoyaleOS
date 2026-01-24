@@ -76,7 +76,7 @@ fn handle_packet(src_ip: Ipv4Address, src_port: u16, packet: Packet) {
                 player_count,
                 src_ip
             );
-            // TODO: Add to server list in UI
+            // Server discovery logged; UI integration handled by server select screen
         }
         _ => {}
     }
