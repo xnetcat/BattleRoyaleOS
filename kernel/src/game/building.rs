@@ -51,6 +51,16 @@ impl BuildPiece {
         }
     }
 
+    /// Create a roof/cone piece
+    pub fn roof(position: Vec3, rotation: f32) -> Self {
+        Self {
+            build_type: BuildType::Roof,
+            position,
+            rotation,
+            health: 140,
+        }
+    }
+
     /// Take damage
     pub fn damage(&mut self, amount: u16) -> bool {
         if self.health > amount {

@@ -11,43 +11,70 @@ pub struct StormPhase {
     pub damage: u8,       // damage per tick
 }
 
-/// Default storm phases
+/// Default storm phases (9 circles as per Fortnite-style battle royale)
 const PHASES: &[StormPhase] = &[
+    // Circle 1: Wait 3:00, Shrink 3:00, Damage 1/sec
     StormPhase {
         radius: 1000.0,
-        shrink_time: 0.0,
+        shrink_time: 180.0,
+        wait_time: 180.0,
+        damage: 1,
+    },
+    // Circle 2: Wait 2:00, Shrink 2:00, Damage 1/sec
+    StormPhase {
+        radius: 650.0,
+        shrink_time: 120.0,
         wait_time: 120.0,
         damage: 1,
     },
+    // Circle 3: Wait 1:30, Shrink 1:30, Damage 2/sec
     StormPhase {
-        radius: 500.0,
-        shrink_time: 60.0,
+        radius: 420.0,
+        shrink_time: 90.0,
         wait_time: 90.0,
         damage: 2,
     },
+    // Circle 4: Wait 1:20, Shrink 1:00, Damage 5/sec
     StormPhase {
-        radius: 250.0,
-        shrink_time: 45.0,
+        radius: 270.0,
+        shrink_time: 60.0,
+        wait_time: 80.0,
+        damage: 5,
+    },
+    // Circle 5: Wait 1:00, Shrink 1:00, Damage 5/sec
+    StormPhase {
+        radius: 175.0,
+        shrink_time: 60.0,
         wait_time: 60.0,
         damage: 5,
     },
+    // Circle 6: Wait 1:00, Shrink 0:45, Damage 8/sec
     StormPhase {
-        radius: 100.0,
+        radius: 110.0,
+        shrink_time: 45.0,
+        wait_time: 60.0,
+        damage: 8,
+    },
+    // Circle 7: Wait 1:00, Shrink 0:30, Damage 8/sec
+    StormPhase {
+        radius: 60.0,
+        shrink_time: 30.0,
+        wait_time: 60.0,
+        damage: 8,
+    },
+    // Circle 8: Wait 0:30, Shrink 0:30, Damage 10/sec
+    StormPhase {
+        radius: 25.0,
         shrink_time: 30.0,
         wait_time: 30.0,
         damage: 10,
     },
-    StormPhase {
-        radius: 25.0,
-        shrink_time: 15.0,
-        wait_time: 15.0,
-        damage: 15,
-    },
+    // Circle 9: Wait 0:30, Shrink instant (closes completely), Damage 10/sec
     StormPhase {
         radius: 0.0,
-        shrink_time: 10.0,
-        wait_time: 0.0,
-        damage: 20,
+        shrink_time: 1.0,
+        wait_time: 30.0,
+        damage: 10,
     },
 ];
 

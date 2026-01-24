@@ -201,12 +201,12 @@ impl GameMap {
                 poi_type: POIType::Rural,
             },
             POI {
-                name: "WAILING WOODS",
-                center: Vec3::new(-600.0, 0.0, 200.0),
-                radius: 160.0,
+                name: "SNOBBY SHORES",
+                center: Vec3::new(-700.0, 0.0, 200.0),
+                radius: 140.0,
                 loot_tier: ChestTier::Normal,
-                building_count: 2,
-                poi_type: POIType::Natural,
+                building_count: 5,
+                poi_type: POIType::Town,
             },
             POI {
                 name: "DUSTY DEPOT",
@@ -217,12 +217,12 @@ impl GameMap {
                 poi_type: POIType::Industrial,
             },
             POI {
-                name: "TOMATO TOWN",
-                center: Vec3::new(-300.0, 0.0, -700.0),
-                radius: 90.0,
+                name: "JUNK JUNCTION",
+                center: Vec3::new(-500.0, 0.0, -700.0),
+                radius: 110.0,
                 loot_tier: ChestTier::Normal,
                 building_count: 4,
-                poi_type: POIType::Town,
+                poi_type: POIType::Industrial,
             },
         ];
 
