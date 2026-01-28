@@ -3,7 +3,10 @@
 //! The FIFO is a circular buffer used to send commands to the SVGA device.
 //! Commands are written to the FIFO and the device processes them asynchronously.
 
+extern crate alloc;
+
 use super::regs::{self, SvgaReg};
+use alloc::vec;
 use core::sync::atomic::{fence, Ordering};
 
 /// FIFO register offsets (indices into FIFO memory)
@@ -333,5 +336,248 @@ impl VmsvgaFifo {
     /// Send UPDATE command to refresh the entire screen
     pub fn cmd_update_full(&self, width: u32, height: u32) -> bool {
         self.cmd_update(0, 0, width, height)
+    }
+
+    // ============== SVGA3D Commands ==============
+
+    /// Write an SVGA3D command with header
+    /// The header format is: [cmd_id, size_in_bytes, ...data...]
+    pub fn write_3d_cmd(&self, cmd_id: u32, data: &[u32]) -> bool {
+        let size = data.len() as u32 * 4;
+        let total_words = 2 + data.len(); // header (2 words) + data
+        let total_bytes = total_words * 4;
+
+        let offset = match self.reserve(total_bytes) {
+            Some(off) => off,
+            None => {
+                self.sync();
+                match self.reserve(total_bytes) {
+                    Some(off) => off,
+                    None => return false,
+                }
+            }
+        };
+
+        // Write header and data
+        let ptr = self.base as usize + offset as usize;
+        unsafe {
+            // Header: cmd_id, size
+            core::ptr::write_volatile(ptr as *mut u32, cmd_id);
+            core::ptr::write_volatile((ptr as *mut u32).add(1), size);
+            // Data
+            for (i, &word) in data.iter().enumerate() {
+                core::ptr::write_volatile((ptr as *mut u32).add(2 + i), word);
+            }
+        }
+
+        self.commit(total_bytes);
+        true
+    }
+
+    /// Define a 3D context
+    pub fn cmd_3d_context_define(&self, cid: u32) -> bool {
+        use super::svga3d::cmd;
+        self.write_3d_cmd(cmd::CONTEXT_DEFINE, &[cid])
+    }
+
+    /// Destroy a 3D context
+    pub fn cmd_3d_context_destroy(&self, cid: u32) -> bool {
+        use super::svga3d::cmd;
+        self.write_3d_cmd(cmd::CONTEXT_DESTROY, &[cid])
+    }
+
+    /// Define a 3D surface
+    /// flags, format, face[0] (numMipLevels), sid, size.width, size.height, size.depth
+    pub fn cmd_3d_surface_define(
+        &self,
+        sid: u32,
+        flags: u32,
+        format: u32,
+        num_faces: u32,
+        num_mip_levels: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+    ) -> bool {
+        use super::svga3d::cmd;
+        // Surface define structure:
+        // sid, surfaceFlags, format, numFaces
+        // then for each face: numMipLevels
+        // then for each mip level of face 0: SVGA3dSize (width, height, depth)
+        let data = [
+            sid,
+            flags,
+            format,
+            num_faces,
+            num_mip_levels,  // face[0].numMipLevels
+            width,
+            height,
+            depth,
+        ];
+        self.write_3d_cmd(cmd::SURFACE_DEFINE, &data)
+    }
+
+    /// Destroy a 3D surface
+    pub fn cmd_3d_surface_destroy(&self, sid: u32) -> bool {
+        use super::svga3d::cmd;
+        self.write_3d_cmd(cmd::SURFACE_DESTROY, &[sid])
+    }
+
+    /// Set viewport
+    pub fn cmd_3d_set_viewport(&self, cid: u32, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) -> bool {
+        use super::svga3d::cmd;
+        let data = [
+            cid,
+            x.to_bits(),
+            y.to_bits(),
+            width.to_bits(),
+            height.to_bits(),
+            min_depth.to_bits(),
+            max_depth.to_bits(),
+        ];
+        self.write_3d_cmd(cmd::SETVIEWPORT, &data)
+    }
+
+    /// Set Z range
+    pub fn cmd_3d_set_z_range(&self, cid: u32, min: f32, max: f32) -> bool {
+        use super::svga3d::cmd;
+        let data = [cid, min.to_bits(), max.to_bits()];
+        self.write_3d_cmd(cmd::SETZRANGE, &data)
+    }
+
+    /// Set render target
+    /// target_type: 0 = color, 1 = depth, 2 = stencil
+    pub fn cmd_3d_set_render_target(&self, cid: u32, target_type: u32, sid: u32, face: u32, mipmap: u32) -> bool {
+        use super::svga3d::cmd;
+        let data = [cid, target_type, sid, face, mipmap];
+        self.write_3d_cmd(cmd::SETRENDERTARGET, &data)
+    }
+
+    /// Set transform matrix
+    pub fn cmd_3d_set_transform(&self, cid: u32, transform_type: u32, matrix: &[f32; 16]) -> bool {
+        use super::svga3d::cmd;
+        let mut data = [0u32; 17];
+        data[0] = cid;
+        data[1] = transform_type;
+        for (i, &val) in matrix.iter().enumerate() {
+            data[2 + i] = val.to_bits();
+        }
+        self.write_3d_cmd(cmd::SETTRANSFORM, &data[..18])
+    }
+
+    /// Set render state
+    pub fn cmd_3d_set_render_state(&self, cid: u32, states: &[(u32, u32)]) -> bool {
+        use super::svga3d::cmd;
+        let mut data = alloc::vec![cid];
+        for &(state_id, value) in states {
+            data.push(state_id);
+            data.push(value);
+        }
+        self.write_3d_cmd(cmd::SETRENDERSTATE, &data)
+    }
+
+    /// Clear render target and/or depth buffer
+    pub fn cmd_3d_clear(&self, cid: u32, flags: u32, color: u32, depth: f32, stencil: u32) -> bool {
+        use super::svga3d::cmd;
+        // SVGA3dCmdClear: cid, clearFlag, color, depth, stencil, rect (x, y, w, h)
+        // For full screen clear we pass empty rect array
+        let data = [
+            cid,
+            flags,
+            color,
+            depth.to_bits(),
+            stencil,
+            // No rects = clear entire surface
+        ];
+        self.write_3d_cmd(cmd::CLEAR, &data)
+    }
+
+    /// Present (blit render target to screen)
+    /// Present blits from 3D render target to 2D screen
+    pub fn cmd_3d_present(&self, sid: u32, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, width: u32, height: u32) -> bool {
+        use super::svga3d::cmd;
+        // SVGA3dCmdPresent: sid, then array of SVGA3dCopyRect
+        let data = [
+            sid,
+            1, // numRects (we're presenting one rectangle)
+            src_x,
+            src_y,
+            dst_x,
+            dst_y,
+            width,
+            height,
+        ];
+        self.write_3d_cmd(cmd::PRESENT, &data)
+    }
+
+    /// Blit surface to screen (alternative to present)
+    pub fn cmd_3d_blit_to_screen(
+        &self,
+        src_sid: u32,
+        src_x: u32,
+        src_y: u32,
+        dst_screen_id: u32,
+        dst_x: i32,
+        dst_y: i32,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        use super::svga3d::cmd;
+        // SVGA3dCmdBlitSurfaceToScreen
+        let data = [
+            src_sid,
+            src_x,
+            src_y,
+            width,
+            height,
+            dst_screen_id,
+            dst_x as u32,
+            dst_y as u32,
+            width,
+            height,
+            1, // numClipRects
+            dst_x as u32,
+            dst_y as u32,
+            width,
+            height,
+        ];
+        self.write_3d_cmd(cmd::BLIT_SURFACE_TO_SCREEN, &data)
+    }
+
+    /// Draw primitives
+    pub fn cmd_3d_draw_primitives(
+        &self,
+        cid: u32,
+        vertex_decls: &[u32],
+        num_ranges: u32,
+        ranges: &[u32],
+    ) -> bool {
+        use super::svga3d::cmd;
+
+        // Build the command data
+        let mut data = alloc::vec![cid];
+        data.push(vertex_decls.len() as u32 / 6); // numVertexDecls (each decl is 6 u32s)
+        data.push(num_ranges);
+        data.extend_from_slice(vertex_decls);
+        data.extend_from_slice(ranges);
+
+        self.write_3d_cmd(cmd::DRAW_PRIMITIVES, &data)
+    }
+
+    /// Write guest 3D hardware version to FIFO
+    pub fn set_guest_3d_hwversion(&self, version: u32) {
+        if !self.is_initialized() {
+            return;
+        }
+        // Write to FIFO register for guest 3D version
+        self.write_reg(fifo_reg::HWVERSION_3D, version);
+    }
+
+    /// Read host 3D hardware version from FIFO
+    pub fn get_host_3d_hwversion(&self) -> u32 {
+        if !self.is_initialized() {
+            return 0;
+        }
+        self.read_reg(fifo_reg::HWVERSION_3D)
     }
 }

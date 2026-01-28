@@ -8,9 +8,11 @@
 //! - FIFO command buffer for accelerated operations
 //! - Screen update commands for efficient display refresh
 //! - Rectangle fill and copy acceleration (when supported)
+//! - SVGA3D support for hardware-accelerated 3D rendering
 
 pub mod fifo;
 pub mod regs;
+pub mod svga3d;
 
 use crate::drivers::pci::{self, PciDevice};
 use crate::memory::paging;
@@ -91,6 +93,11 @@ impl VmsvgaDevice {
     /// Get device capabilities
     pub fn capabilities(&self) -> u32 {
         self.capabilities
+    }
+
+    /// Get reference to FIFO command buffer
+    pub fn fifo(&self) -> &VmsvgaFifo {
+        &self.fifo
     }
 
     /// Get pointer to the front buffer (hardware framebuffer)
@@ -359,5 +366,248 @@ pub fn init() -> Option<(usize, usize)> {
         bpp
     );
 
+    // Try to initialize SVGA3D
+    drop(device); // Release lock before calling init_3d
+    init_3d();
+
     Some((width as usize, height as usize))
+}
+
+/// Check if SVGA3D is supported
+pub fn has_3d_support() -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    if !device.initialized {
+        return false;
+    }
+    regs::has_capability(device.capabilities, regs::cap::THREE_D)
+        && regs::has_capability(device.capabilities, regs::cap::EXTENDED_FIFO)
+}
+
+/// Initialize SVGA3D support
+pub fn init_3d() -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    if !device.initialized {
+        serial_println!("SVGA3D: Device not initialized");
+        return false;
+    }
+
+    // Check for required capabilities
+    let caps = device.capabilities;
+    if !regs::has_capability(caps, regs::cap::THREE_D) {
+        serial_println!("SVGA3D: 3D capability not supported");
+        return false;
+    }
+
+    if !regs::has_capability(caps, regs::cap::EXTENDED_FIFO) {
+        serial_println!("SVGA3D: Extended FIFO not supported");
+        return false;
+    }
+
+    // Write guest 3D hardware version
+    device.fifo.set_guest_3d_hwversion(svga3d::hw_version::CURRENT);
+
+    // Read back host 3D version
+    let host_version = device.fifo.get_host_3d_hwversion();
+    if host_version == 0 {
+        serial_println!("SVGA3D: Host does not support 3D (version=0)");
+        return false;
+    }
+
+    // Check minimum version
+    if host_version < svga3d::hw_version::WS65_B1 {
+        serial_println!(
+            "SVGA3D: Host 3D version too old: 0x{:08x} (need 0x{:08x})",
+            host_version,
+            svga3d::hw_version::WS65_B1
+        );
+        return false;
+    }
+
+    serial_println!("SVGA3D: Initialized (host version: 0x{:08x})", host_version);
+
+    // Initialize SVGA3D device state
+    let mut svga3d = svga3d::SVGA3D_DEVICE.lock();
+    svga3d.available = true;
+    svga3d.hw_version = host_version;
+
+    true
+}
+
+/// Check if SVGA3D is available and initialized
+pub fn is_3d_available() -> bool {
+    let device = svga3d::SVGA3D_DEVICE.lock();
+    device.available
+}
+
+/// Create a 3D rendering context
+pub fn create_3d_context() -> Option<u32> {
+    let mut svga3d = svga3d::SVGA3D_DEVICE.lock();
+    if !svga3d.available {
+        return None;
+    }
+
+    let cid = svga3d.alloc_context_id();
+
+    let device = VMSVGA_DEVICE.lock();
+    if !device.fifo.cmd_3d_context_define(cid) {
+        return None;
+    }
+
+    svga3d.context = Some(svga3d::Svga3dContext::new(cid));
+    if let Some(ref mut ctx) = svga3d.context {
+        ctx.defined = true;
+    }
+
+    Some(cid)
+}
+
+/// Destroy a 3D rendering context
+pub fn destroy_3d_context(cid: u32) -> bool {
+    let mut svga3d = svga3d::SVGA3D_DEVICE.lock();
+    if !svga3d.available {
+        return false;
+    }
+
+    let device = VMSVGA_DEVICE.lock();
+    let result = device.fifo.cmd_3d_context_destroy(cid);
+
+    if result {
+        if let Some(ref ctx) = svga3d.context {
+            if ctx.id == cid {
+                svga3d.context = None;
+            }
+        }
+    }
+
+    result
+}
+
+/// Create a 3D surface (render target, texture, vertex buffer, etc.)
+pub fn create_3d_surface(
+    format: svga3d::SurfaceFormat,
+    width: u32,
+    height: u32,
+    depth: u32,
+    flags: u32,
+    num_mip_levels: u32,
+) -> Option<u32> {
+    let mut svga3d_dev = svga3d::SVGA3D_DEVICE.lock();
+    if !svga3d_dev.available {
+        return None;
+    }
+
+    let sid = svga3d_dev.alloc_surface_id();
+
+    let device = VMSVGA_DEVICE.lock();
+    let num_faces = if (flags & svga3d::surface_flags::CUBEMAP) != 0 { 6 } else { 1 };
+
+    if !device.fifo.cmd_3d_surface_define(
+        sid,
+        flags,
+        format as u32,
+        num_faces,
+        num_mip_levels,
+        width,
+        height,
+        depth,
+    ) {
+        return None;
+    }
+
+    let surface = svga3d::Surface {
+        id: sid,
+        format,
+        width,
+        height,
+        depth,
+        flags,
+        num_mip_levels,
+    };
+    svga3d_dev.surfaces.push(surface);
+
+    Some(sid)
+}
+
+/// Destroy a 3D surface
+pub fn destroy_3d_surface(sid: u32) -> bool {
+    let mut svga3d_dev = svga3d::SVGA3D_DEVICE.lock();
+    if !svga3d_dev.available {
+        return false;
+    }
+
+    let device = VMSVGA_DEVICE.lock();
+    if !device.fifo.cmd_3d_surface_destroy(sid) {
+        return false;
+    }
+
+    svga3d_dev.surfaces.retain(|s| s.id != sid);
+    true
+}
+
+/// Set the render target for a context
+pub fn set_3d_render_target(cid: u32, color_sid: u32, depth_sid: Option<u32>) -> bool {
+    let device = VMSVGA_DEVICE.lock();
+
+    // Set color render target
+    if !device.fifo.cmd_3d_set_render_target(
+        cid,
+        svga3d::RenderTargetType::Color as u32,
+        color_sid,
+        0,
+        0,
+    ) {
+        return false;
+    }
+
+    // Set depth render target if provided
+    if let Some(dsid) = depth_sid {
+        if !device.fifo.cmd_3d_set_render_target(
+            cid,
+            svga3d::RenderTargetType::Depth as u32,
+            dsid,
+            0,
+            0,
+        ) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Set viewport for 3D rendering
+pub fn set_3d_viewport(cid: u32, x: f32, y: f32, width: f32, height: f32) -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    device.fifo.cmd_3d_set_viewport(cid, x, y, width, height, 0.0, 1.0)
+}
+
+/// Set transformation matrix
+pub fn set_3d_transform(cid: u32, transform_type: svga3d::TransformType, matrix: &svga3d::Matrix4x4) -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    let flat_matrix: [f32; 16] = unsafe { core::mem::transmute(matrix.m) };
+    device.fifo.cmd_3d_set_transform(cid, transform_type as u32, &flat_matrix)
+}
+
+/// Clear the render target
+pub fn clear_3d(cid: u32, color: u32, depth: f32) -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    device.fifo.cmd_3d_clear(
+        cid,
+        svga3d::clear_flags::COLOR | svga3d::clear_flags::DEPTH,
+        color,
+        depth,
+        0,
+    )
+}
+
+/// Present the 3D render target to screen
+pub fn present_3d(sid: u32, width: u32, height: u32) -> bool {
+    let device = VMSVGA_DEVICE.lock();
+    device.fifo.cmd_3d_present(sid, 0, 0, 0, 0, width, height)
+}
+
+/// Sync FIFO - wait for all 3D commands to complete
+pub fn sync_3d() {
+    let device = VMSVGA_DEVICE.lock();
+    device.fifo.sync();
 }
