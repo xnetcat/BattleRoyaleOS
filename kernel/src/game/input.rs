@@ -257,6 +257,15 @@ fn read_data() -> Option<u8> {
 
 /// Initialize PS/2 mouse
 pub fn init_mouse() {
+    // Flush any pending data from the controller
+    unsafe {
+        for _ in 0..100 {
+            if Port::<u8>::new(KEYBOARD_STATUS_PORT).read() & 0x01 != 0 {
+                let _ = Port::<u8>::new(KEYBOARD_DATA_PORT).read();
+            }
+        }
+    }
+
     // Enable auxiliary device (mouse)
     send_command(0xA8);
 
@@ -267,19 +276,38 @@ pub fn init_mouse() {
         send_data(config | 0x02);  // Enable IRQ12
     }
 
+    // Reset mouse to known state
+    send_command(0xD4);  // Send to mouse
+    send_data(0xFF);     // Reset
+    read_data();         // ACK
+    read_data();         // Self-test result (0xAA)
+    read_data();         // Mouse ID (0x00)
+
     // Set mouse defaults
     send_command(0xD4);  // Send to mouse
     send_data(0xF6);     // Set defaults
     read_data();         // Wait for ACK
+
+    // Set sample rate to 100 samples/sec for smoother movement
+    send_command(0xD4);
+    send_data(0xF3);     // Set sample rate
+    read_data();         // ACK
+    send_command(0xD4);
+    send_data(100);      // 100 samples/sec
+    read_data();         // ACK
 
     // Enable mouse data reporting
     send_command(0xD4);  // Send to mouse
     send_data(0xF4);     // Enable
     read_data();         // Wait for ACK
 
+    // Reset packet state
+    *MOUSE_PACKET_STATE.lock() = 0;
+    *MOUSE_PACKET.lock() = [0; 3];
+
     *MOUSE_STATE.lock() = MouseState {
-        x: 640,
-        y: 400,
+        x: 512,  // Center of 1024 width
+        y: 384,  // Center of 768 height
         delta_x: 0,
         delta_y: 0,
         left_button: false,
@@ -290,74 +318,78 @@ pub fn init_mouse() {
 }
 
 /// Poll keyboard and mouse (non-blocking)
+/// Call this multiple times per frame to process all pending input
 pub fn poll_keyboard() {
-    unsafe {
-        let status = Port::<u8>::new(KEYBOARD_STATUS_PORT).read();
+    // Process up to 32 bytes of input per call to handle accumulated data
+    for _ in 0..32 {
+        unsafe {
+            let status = Port::<u8>::new(KEYBOARD_STATUS_PORT).read();
 
-        // Check if there's data available
-        if status & 0x01 == 0 {
-            return;
-        }
-
-        let data = Port::<u8>::new(KEYBOARD_DATA_PORT).read();
-
-        // Check if this is mouse data (bit 5 set in status)
-        if status & 0x20 != 0 {
-            handle_mouse_data(data);
-            return;
-        }
-
-        // Handle keyboard data
-        let mut extended = EXTENDED_KEY.lock();
-
-        if data == ScanCode::EXTENDED {
-            *extended = true;
-            return;
-        }
-
-        let released = data & 0x80 != 0;
-        let code = data & 0x7F;
-        let is_extended = *extended;
-        *extended = false;
-
-        drop(extended);
-
-        let mut state = KEY_STATE.lock();
-
-        if is_extended {
-            // Extended key codes
-            match code {
-                ScanCode::UP => state.up = !released,
-                ScanCode::DOWN => state.down = !released,
-                ScanCode::LEFT => state.left = !released,
-                ScanCode::RIGHT => state.right = !released,
-                _ => {}
+            // Check if there's data available
+            if status & 0x01 == 0 {
+                return;
             }
-        } else {
-            // Regular key codes
-            match code {
-                ScanCode::W => state.w = !released,
-                ScanCode::A => state.a = !released,
-                ScanCode::S => state.s = !released,
-                ScanCode::D => state.d = !released,
-                ScanCode::SPACE => state.space = !released,
-                ScanCode::LCTRL => state.ctrl = !released,
-                ScanCode::LSHIFT => state.shift = !released,
-                ScanCode::B => state.b = !released,
-                ScanCode::ESC => state.escape = !released,
-                ScanCode::ENTER => state.enter = !released,
-                ScanCode::TAB => state.tab = !released,
-                ScanCode::ONE => state.one = !released,
-                ScanCode::TWO => state.two = !released,
-                ScanCode::THREE => state.three = !released,
-                ScanCode::FOUR => state.four = !released,
-                ScanCode::FIVE => state.five = !released,
-                ScanCode::Q => state.q = !released,
-                ScanCode::E => state.e = !released,
-                ScanCode::R => state.r = !released,
-                ScanCode::F => state.f = !released,
-                ScanCode::T => state.t = !released,
-                _ => {}
+
+            let data = Port::<u8>::new(KEYBOARD_DATA_PORT).read();
+
+            // Check if this is mouse data (bit 5 set in status)
+            if status & 0x20 != 0 {
+                handle_mouse_data(data);
+                continue;
+            }
+
+            // Handle keyboard data
+            let mut extended = EXTENDED_KEY.lock();
+
+            if data == ScanCode::EXTENDED {
+                *extended = true;
+                continue;
+            }
+
+            let released = data & 0x80 != 0;
+            let code = data & 0x7F;
+            let is_extended = *extended;
+            *extended = false;
+
+            drop(extended);
+
+            let mut state = KEY_STATE.lock();
+
+            if is_extended {
+                // Extended key codes
+                match code {
+                    ScanCode::UP => state.up = !released,
+                    ScanCode::DOWN => state.down = !released,
+                    ScanCode::LEFT => state.left = !released,
+                    ScanCode::RIGHT => state.right = !released,
+                    _ => {}
+                }
+            } else {
+                // Regular key codes
+                match code {
+                    ScanCode::W => state.w = !released,
+                    ScanCode::A => state.a = !released,
+                    ScanCode::S => state.s = !released,
+                    ScanCode::D => state.d = !released,
+                    ScanCode::SPACE => state.space = !released,
+                    ScanCode::LCTRL => state.ctrl = !released,
+                    ScanCode::LSHIFT => state.shift = !released,
+                    ScanCode::B => state.b = !released,
+                    ScanCode::ESC => state.escape = !released,
+                    ScanCode::ENTER => state.enter = !released,
+                    ScanCode::TAB => state.tab = !released,
+                    ScanCode::ONE => state.one = !released,
+                    ScanCode::TWO => state.two = !released,
+                    ScanCode::THREE => state.three = !released,
+                    ScanCode::FOUR => state.four = !released,
+                    ScanCode::FIVE => state.five = !released,
+                    ScanCode::Q => state.q = !released,
+                    ScanCode::E => state.e = !released,
+                    ScanCode::R => state.r = !released,
+                    ScanCode::F => state.f = !released,
+                    ScanCode::T => state.t = !released,
+                    _ => {}
+                }
             }
         }
     }
@@ -368,6 +400,15 @@ fn handle_mouse_data(data: u8) {
     let mut packet_state = MOUSE_PACKET_STATE.lock();
     let mut packet = MOUSE_PACKET.lock();
 
+    // Packet synchronization: first byte must have bit 3 set (always 1 in PS/2 mouse)
+    // If we're expecting byte 0 and bit 3 is not set, this is a mid-packet byte - skip it
+    if *packet_state == 0 {
+        if data & 0x08 == 0 {
+            // Invalid first byte, skip to resync
+            return;
+        }
+    }
+
     packet[*packet_state as usize] = data;
     *packet_state += 1;
 
@@ -376,36 +417,37 @@ fn handle_mouse_data(data: u8) {
 
         // Parse mouse packet
         let status = packet[0];
-        let dx = packet[1] as i8 as i32;
-        let dy = packet[2] as i8 as i32;
+        let dx_raw = packet[1];
+        let dy_raw = packet[2];
 
         // Check for overflow (discard packet)
         if status & 0xC0 != 0 {
             return;
         }
 
-        let mut mouse = MOUSE_STATE.lock();
-
-        // Apply sign extension if needed
+        // Calculate delta with proper sign extension
+        // Bit 4 of status = X sign, Bit 5 = Y sign
         let delta_x = if status & 0x10 != 0 {
-            dx - 256
+            dx_raw as i32 - 256  // Negative
         } else {
-            dx
+            dx_raw as i32       // Positive
         };
 
         let delta_y = if status & 0x20 != 0 {
-            dy - 256
+            dy_raw as i32 - 256  // Negative
         } else {
-            dy
+            dy_raw as i32       // Positive
         };
 
-        mouse.delta_x = delta_x;
-        mouse.delta_y = -delta_y;  // Invert Y (screen Y goes down)
+        let mut mouse = MOUSE_STATE.lock();
 
-        // Update absolute position (clamped to screen bounds)
-        // We'll use 1280x800 as default, actual bounds checked during rendering
-        mouse.x = (mouse.x + delta_x).clamp(0, 1280);
-        mouse.y = (mouse.y - delta_y).clamp(0, 800);  // Invert Y
+        // Accumulate deltas (will be consumed and reset by game loop)
+        mouse.delta_x += delta_x;
+        mouse.delta_y += -delta_y;  // Invert Y for screen coordinates
+
+        // Update absolute position for cursor (clamped to screen bounds)
+        mouse.x = (mouse.x + delta_x).clamp(0, 1024);
+        mouse.y = (mouse.y - delta_y).clamp(0, 768);
 
         // Update button states
         mouse.left_button = status & 0x01 != 0;

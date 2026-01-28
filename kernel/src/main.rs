@@ -517,35 +517,33 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
 
                 // Apply keyboard and mouse input to local player
                 if let Some(id) = local_player_id {
-                    // Mouse look sensitivity
-                    const MOUSE_SENSITIVITY: f32 = 0.003;
+                    // Mouse look sensitivity (adjusted for smooth camera)
+                    const MOUSE_SENSITIVITY: f32 = 0.002;
 
-                    // Update player rotation with mouse movement
+                    // Update camera rotation with mouse movement ONLY
+                    // Mouse delta is accumulated, so we use it and reset
                     player_yaw += mouse.delta_x as f32 * MOUSE_SENSITIVITY;
                     player_pitch += mouse.delta_y as f32 * MOUSE_SENSITIVITY;
-                    // Clamp pitch to prevent camera flipping
-                    player_pitch = player_pitch.clamp(-1.5, 1.5);
 
-                    // Also support A/D keys for rotation (tank controls)
-                    if key_state.a {
-                        player_yaw -= 0.05;
-                    }
-                    if key_state.d {
-                        player_yaw += 0.05;
-                    }
+                    // Clamp pitch to prevent camera flipping (roughly -85 to +85 degrees)
+                    player_pitch = player_pitch.clamp(-1.48, 1.48);
 
-                    // Create input from keyboard + mouse state
+                    // Reset mouse deltas after reading (important!)
+                    game::input::reset_mouse_deltas();
+
+                    // Create input from keyboard state
+                    // WASD = movement, Mouse = camera
                     input_sequence += 1;
                     let input = protocol::packets::ClientInput {
                         player_id: id,
                         sequence: input_sequence,
                         forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
-                        strafe: 0, // A/D used for rotation
+                        strafe: if key_state.d { 1 } else if key_state.a { -1 } else { 0 }, // A/D for strafe
                         jump: key_state.space,
                         crouch: key_state.ctrl,
                         // Fire with left click OR shift key
                         fire: mouse.left_button || key_state.shift,
-                        build: key_state.b,
+                        build: key_state.b || mouse.right_button, // Right click also builds
                         exit_bus: key_state.space,
                         yaw: (player_yaw.to_degrees() * 100.0) as i16,
                         pitch: (player_pitch.to_degrees() * 100.0) as i16,
