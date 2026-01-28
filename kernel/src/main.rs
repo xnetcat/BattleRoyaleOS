@@ -8,6 +8,11 @@
 
 extern crate alloc;
 
+use core::sync::atomic::AtomicBool;
+
+/// Global benchmark mode flag - set by kernel_main, read by main_loop
+static BENCHMARK_MODE: AtomicBool = AtomicBool::new(false);
+
 mod boot;
 mod drivers;
 mod game;
@@ -77,14 +82,13 @@ extern "C" fn _start() -> ! {
         memory::dma::init_dma_pool(entries, hhdm_offset);
     }
 
-    // Initialize framebuffer
-    let (fb_width, fb_height) = if let Some((w, h)) = graphics::framebuffer::init() {
-        serial_println!("Framebuffer: {}x{}", w, h);
-        (w, h)
-    } else {
+    // Initialize GPU (tries VMSVGA first, falls back to software framebuffer)
+    let (fb_width, fb_height) = graphics::gpu::init();
+    serial_println!("GPU: {} {}x{}", graphics::gpu::backend_name(), fb_width, fb_height);
+    if fb_width == 0 || fb_height == 0 {
         serial_println!("ERROR: No framebuffer available");
         halt_loop();
-    };
+    }
 
     // Initialize z-buffer
     zbuffer::init(fb_width, fb_height);
@@ -146,20 +150,33 @@ extern "C" fn _start() -> ! {
 
     // Initialize game world
     serial_println!("Initializing game world...");
-    // Check kernel arguments for server/client mode
-    let mut is_server = false; // Default to client
+    // Check kernel arguments for server/client/benchmark mode
+    let mut is_server = false;
+    let mut benchmark_mode = false;
     if let Some(file) = KERNEL_FILE_REQUEST.get_response() {
-        // Explicitly handle CStr from Limine 0.5
-        let cmd_cstr: &CStr = file.file().string();
-        if let Ok(cmd_str) = cmd_cstr.to_str() {
-            serial_println!("Kernel args: {:?}", cmd_cstr);
-            if cmd_str.contains("server") {
+        // Check kernel file path (for legacy)
+        let path_cstr: &CStr = file.file().string();
+        if let Ok(path_str) = path_cstr.to_str() {
+            serial_println!("Kernel path: {:?}", path_str);
+        }
+        // Check cmdline for options
+        let cmdline_bytes = file.file().cmdline();
+        if let Ok(cmdline) = core::str::from_utf8(cmdline_bytes) {
+            serial_println!("Kernel cmdline: {:?}", cmdline);
+            if cmdline.contains("server") {
                 is_server = true;
+            }
+            if cmdline.contains("benchmark") || cmdline.contains("test") {
+                benchmark_mode = true;
+                serial_println!("BENCHMARK MODE: Auto-starting game");
             }
         }
     }
     game::world::init(is_server);
     serial_println!("Game world initialized (Server: {})", is_server);
+
+    // Store benchmark mode for main loop (global static)
+    BENCHMARK_MODE.store(benchmark_mode, core::sync::atomic::Ordering::SeqCst);
 
     // Initialize SMP - start worker cores
     serial_println!("Initializing SMP...");
@@ -248,7 +265,52 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // Countdown timer
     let mut countdown_timer = 0.0f32;
 
+    // Check for benchmark mode - auto-start game
+    let benchmark = BENCHMARK_MODE.load(core::sync::atomic::Ordering::SeqCst);
+    let mut benchmark_started = false;
+    let mut benchmark_frames = 0u32;
+    let mut benchmark_start_time = 0u64;
+
     loop {
+        // Benchmark mode: auto-start game after a few frames
+        if benchmark && !benchmark_started && frame_count > 10 {
+            benchmark_started = true;
+            benchmark_start_time = read_tsc();
+            serial_println!("BENCHMARK: Starting InGame test...");
+
+            // Create a local player and put them in the game
+            if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                // Add a player if none exists
+                if world.players.is_empty() {
+                    use smoltcp::wire::Ipv4Address;
+                    let player = game::player::Player::new(0, "Benchmark", Ipv4Address::new(127, 0, 0, 1), 5000);
+                    world.players.push(player);
+                    world.local_player_id = Some(0);
+                    local_player_id = Some(0);
+                }
+                // Set player to grounded (not on bus)
+                if let Some(p) = world.players.get_mut(0) {
+                    p.phase = game::state::PlayerPhase::Grounded;
+                    p.position = Vec3::new(100.0, 5.0, 100.0);
+                }
+            }
+
+            // Jump straight to InGame state
+            set_state(GameState::InGame);
+        }
+
+        // Benchmark: report FPS every 60 frames
+        if benchmark && benchmark_started {
+            benchmark_frames += 1;
+            if benchmark_frames % 60 == 0 {
+                let elapsed = read_tsc().wrapping_sub(benchmark_start_time);
+                let secs = elapsed as f64 / tsc_per_second as f64;
+                let avg_fps = benchmark_frames as f64 / secs;
+                serial_println!("BENCHMARK: {} frames in {:.2}s = {:.1} avg FPS (current: {})",
+                    benchmark_frames, secs, avg_fps, current_fps);
+            }
+        }
+
         // Poll keyboard
         game::input::poll_keyboard();
         let key_state = game::input::KEY_STATE.lock().clone();
@@ -320,7 +382,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                     if let Some(fb) = fb_guard.as_ref() {
                         let mouse = game::input::get_mouse_state();
                         graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
-                        fb.present();
+                        drop(fb_guard);
+                        graphics::gpu::present();
                     }
                 }
                 // Draw cursor and present
@@ -329,7 +392,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                     if let Some(fb) = fb_guard.as_ref() {
                         let mouse = game::input::get_mouse_state();
                         graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
-                        fb.present();
+                        drop(fb_guard);
+                        graphics::gpu::present();
                     }
                 }
             }
@@ -522,9 +586,11 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                         }
                     }
 
-                    // Check for victory condition
-                    if let Some(id) = world.check_victory() {
-                        set_state(GameState::Victory { winner_id: Some(id) });
+                    // Check for victory condition (skip in benchmark mode)
+                    if !BENCHMARK_MODE.load(core::sync::atomic::Ordering::Relaxed) {
+                        if let Some(id) = world.check_victory() {
+                            set_state(GameState::Victory { winner_id: Some(id) });
+                        }
                     }
                 }
 
@@ -568,6 +634,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         let elapsed = now.wrapping_sub(last_fps_time);
         if elapsed >= tsc_per_second {
             current_fps = fps_frame_count;
+            serial_println!("FPS: {} (state: {:?})", current_fps, current_state);
             fps_frame_count = 0;
             last_fps_time = now;
         }
@@ -640,7 +707,8 @@ where
             // Draw mouse cursor on top of everything
             let mouse = game::input::get_mouse_state();
             graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
-            fb.present();
+            drop(fb_guard);
+                        graphics::gpu::present();
         }
     }
 }
@@ -740,7 +808,8 @@ fn render_test_map_frame(
         if let Some(fb) = fb_guard.as_ref() {
             let mouse = game::input::get_mouse_state();
             graphics::cursor::draw_cursor(fb, mouse.x, mouse.y);
-            fb.present();
+            drop(fb_guard);
+                        graphics::gpu::present();
         }
     }
 }
@@ -1107,12 +1176,7 @@ fn render_game_frame(
     }
 
     // Present: copy back buffer to display
-    {
-        let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
-        if let Some(fb) = fb_guard.as_ref() {
-            fb.present();
-        }
-    }
+    graphics::gpu::present();
 }
 
 /// Draw storm overlay effect when player is in storm
