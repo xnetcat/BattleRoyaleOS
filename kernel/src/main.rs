@@ -965,15 +965,15 @@ fn render_game_frame(
     rotation: f32,
     current_fps: u32,
 ) {
-    // Begin frame with GPU acceleration (clears buffers)
-    let sky_color = rgb(50, 70, 100);
-    graphics::gpu_render::begin_frame(sky_color);
-
     // Acquire render context for this frame
     let render_ctx = match rasterizer::RenderContext::acquire() {
         Some(ctx) => ctx,
         None => return,
     };
+
+    // Clear back buffer and z-buffer (double buffering prevents flicker)
+    render_ctx.clear(rgb(50, 70, 100)); // Sky blue background
+    render_ctx.clear_zbuffer();
 
     // Get camera position from local player (or default orbit)
     let (camera_pos, camera_target, local_player_phase) = {
@@ -1123,12 +1123,6 @@ fn render_game_frame(
     } else {
         // === SOFTWARE RENDERING PATH ===
         // Parallel tile-based software rasterization (4 cores)
-
-        // Debug: only print once to avoid spam
-        static PRINTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-        if !PRINTED.swap(true, Ordering::Relaxed) {
-            serial_println!("RENDER: Using software path");
-        }
 
         // 1. Clear lock-free bins and reset triangle buffer
         tiles::clear_lockfree_bins();
