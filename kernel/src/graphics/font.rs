@@ -265,11 +265,17 @@ pub fn draw_string_centered_raw(fb: &super::framebuffer::Framebuffer, y: usize, 
 /// Draw FPS counter in top-left corner with solid background
 /// Uses a larger, more visible format
 pub fn draw_fps(fps: u32, _fb_width: usize) {
-    // Format: "FPS: XXX"
-    let mut buf = [0u8; 12];
-    let s = format_fps(fps, &mut buf);
+    // Get triangle count for this frame
+    let tri_count = super::tiles::triangle_count();
 
-    let scale = 3; // Larger scale for visibility
+    // Get GPU status
+    let gpu_name = super::gpu::backend_name();
+
+    // Format: "FPS: XXX | TRI: XXXX | GPU"
+    let mut buf = [0u8; 48];
+    let s = format_fps_extended(fps, tri_count, gpu_name, &mut buf);
+
+    let scale = 2; // Slightly smaller for more info
     let char_width = 8 * scale + scale;
     let text_width = s.len() * char_width;
     let x = 10; // Top-left corner for visibility
@@ -279,7 +285,7 @@ pub fn draw_fps(fps: u32, _fb_width: usize) {
     let bg_color = 0x00202040u32; // Dark blue-gray, matches clear color
     let fb_guard = FRAMEBUFFER.lock();
     if let Some(fb) = fb_guard.as_ref() {
-        let padding = 6;
+        let padding = 4;
         let y_start = if y >= padding { y - padding } else { 0 };
         let y_end = (y + 8 * scale + padding).min(fb.height);
         let x_start = if x >= padding { x - padding } else { 0 };
@@ -294,6 +300,62 @@ pub fn draw_fps(fps: u32, _fb_width: usize) {
 
     let color = 0x00FFFF00; // Yellow for maximum visibility
     draw_string(x, y, s, color, scale);
+}
+
+/// Format FPS with triangle count and GPU info
+fn format_fps_extended<'a>(fps: u32, tri_count: usize, gpu: &str, buf: &'a mut [u8]) -> &'a str {
+    // Format: "FPS:XXX T:XXXX G"
+    let mut pos = 0;
+
+    // "FPS:"
+    buf[pos] = b'F'; pos += 1;
+    buf[pos] = b'P'; pos += 1;
+    buf[pos] = b'S'; pos += 1;
+    buf[pos] = b':'; pos += 1;
+
+    // FPS value (3 digits max)
+    let fps = fps.min(999);
+    if fps >= 100 {
+        buf[pos] = b'0' + ((fps / 100) % 10) as u8; pos += 1;
+    }
+    if fps >= 10 {
+        buf[pos] = b'0' + ((fps / 10) % 10) as u8; pos += 1;
+    }
+    buf[pos] = b'0' + (fps % 10) as u8; pos += 1;
+
+    // Separator
+    buf[pos] = b' '; pos += 1;
+    buf[pos] = b'T'; pos += 1;
+    buf[pos] = b':'; pos += 1;
+
+    // Triangle count (5 digits max)
+    let tri = (tri_count as u32).min(99999);
+    if tri >= 10000 {
+        buf[pos] = b'0' + ((tri / 10000) % 10) as u8; pos += 1;
+    }
+    if tri >= 1000 {
+        buf[pos] = b'0' + ((tri / 1000) % 10) as u8; pos += 1;
+    }
+    if tri >= 100 {
+        buf[pos] = b'0' + ((tri / 100) % 10) as u8; pos += 1;
+    }
+    if tri >= 10 {
+        buf[pos] = b'0' + ((tri / 10) % 10) as u8; pos += 1;
+    }
+    buf[pos] = b'0' + (tri % 10) as u8; pos += 1;
+
+    // Separator and GPU indicator
+    buf[pos] = b' '; pos += 1;
+
+    // Show first char of GPU backend (S=Software, V=VMSVGA, G=SVGA3D)
+    let gpu_char = match gpu.chars().next() {
+        Some('S') if gpu.starts_with("SVGA3D") => 'G',
+        Some(c) => c,
+        None => '?',
+    };
+    buf[pos] = gpu_char as u8; pos += 1;
+
+    core::str::from_utf8(&buf[..pos]).unwrap_or("FPS:?")
 }
 
 /// Draw game HUD (health, materials, alive count)

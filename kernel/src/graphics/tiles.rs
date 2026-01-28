@@ -310,6 +310,12 @@ pub fn get_triangle(idx: u16) -> Option<ScreenTriangle> {
     None
 }
 
+/// Get the number of triangles in the current frame
+#[inline]
+pub fn triangle_count() -> usize {
+    TRIANGLE_COUNT.load(Ordering::Acquire)
+}
+
 /// Clear all lock-free bins
 pub fn clear_lockfree_bins() {
     for bin in TILE_BINS_LOCKFREE.iter() {

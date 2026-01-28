@@ -173,28 +173,148 @@ pub fn project_point(
         color: Vec3::ZERO,
         uv: glam::Vec2::ZERO,
     };
-    
+
     let transformed = transform_vertex(&vertex, model, view, projection, fb_width, fb_height);
-    
+
     // Check if behind camera or clipped (z < 0 is behind near plane in ndc if simplified, but here z is 1/w)
     // Actually transform_vertex returns screen_z = 1/w.
     // If w < 0, it's behind the camera.
     // But transform_vertex assumes valid w for division.
     // Let's check `w` manually here.
-    
+
     let world_pos = *model * Vec4::new(position.x, position.y, position.z, 1.0);
     let view_pos = *view * world_pos;
     let clip_pos = *projection * view_pos;
-    
+
     if clip_pos.w <= 0.0 {
         return None;
     }
-    
+
     let ndc = Vec3::new(clip_pos.x / clip_pos.w, clip_pos.y / clip_pos.w, clip_pos.z / clip_pos.w);
-    
+
     // Viewport transform
     let screen_x = (ndc.x + 1.0) * 0.5 * fb_width;
     let screen_y = (1.0 - ndc.y) * 0.5 * fb_height;
-    
+
     Some(Vec3::new(screen_x, screen_y, ndc.z))
+}
+
+/// Transform a triangle and add to GPU batch for hardware rasterization
+/// Returns true if the triangle was added to GPU batch, false if culled or batch full
+pub fn transform_and_gpu_batch(
+    v0: &Vertex,
+    v1: &Vertex,
+    v2: &Vertex,
+    model: &Mat4,
+    view: &Mat4,
+    projection: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+) -> bool {
+    use super::gpu_batch;
+
+    // Transform all three vertices
+    let tv0 = transform_vertex(v0, model, view, projection, fb_width, fb_height);
+    let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
+    let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
+
+    // Near plane clipping (simple rejection)
+    if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
+        return false;
+    }
+
+    // Far plane clipping
+    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
+        return false;
+    }
+
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+
+    // In screen space with Y pointing down, front-facing triangles
+    // (CCW in world space) become CW, giving negative cross_z
+    if cross_z > 0.0 {
+        return false;
+    }
+
+    // Add to GPU batch with screen-space coordinates and colors
+    gpu_batch::add_screen_triangle(
+        tv0.position.x, tv0.position.y, tv0.position.z,
+        tv0.color.x, tv0.color.y, tv0.color.z,
+        tv1.position.x, tv1.position.y, tv1.position.z,
+        tv1.color.x, tv1.color.y, tv1.color.z,
+        tv2.position.x, tv2.position.y, tv2.position.z,
+        tv2.color.x, tv2.color.y, tv2.color.z,
+    )
+}
+
+/// Transform a triangle and either add to GPU batch or create ScreenTriangle for software rasterization
+/// Returns (Some(ScreenTriangle), true) if GPU batch was used
+/// Returns (Some(ScreenTriangle), false) if software path should be used
+/// Returns (None, _) if triangle was culled
+pub fn transform_and_bin_hybrid(
+    v0: &Vertex,
+    v1: &Vertex,
+    v2: &Vertex,
+    model: &Mat4,
+    view: &Mat4,
+    projection: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+    use_gpu_batch: bool,
+) -> (Option<ScreenTriangle>, bool) {
+    use super::gpu_batch;
+
+    // Transform all three vertices
+    let tv0 = transform_vertex(v0, model, view, projection, fb_width, fb_height);
+    let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
+    let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
+
+    // Near plane clipping (simple rejection)
+    if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
+        return (None, false);
+    }
+
+    // Far plane clipping
+    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
+        return (None, false);
+    }
+
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+
+    // In screen space with Y pointing down, front-facing triangles
+    // (CCW in world space) become CW, giving negative cross_z
+    if cross_z > 0.0 {
+        return (None, false);
+    }
+
+    // If GPU batch is enabled, add triangle to GPU batch
+    if use_gpu_batch && gpu_batch::is_enabled() && gpu_batch::is_active() {
+        let added = gpu_batch::add_screen_triangle(
+            tv0.position.x, tv0.position.y, tv0.position.z,
+            tv0.color.x, tv0.color.y, tv0.color.z,
+            tv1.position.x, tv1.position.y, tv1.position.z,
+            tv1.color.x, tv1.color.y, tv1.color.z,
+            tv2.position.x, tv2.position.y, tv2.position.z,
+            tv2.color.x, tv2.color.y, tv2.color.z,
+        );
+
+        if added {
+            // Check if batch needs flushing
+            if gpu_batch::needs_flush() {
+                gpu_batch::flush_batch();
+            }
+            return (None, true); // GPU handled it, no ScreenTriangle needed
+        }
+        // Batch full, fall through to software path
+    }
+
+    // Create ScreenTriangle for software rasterization
+    let screen_tri = ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32);
+    (screen_tri, false)
 }

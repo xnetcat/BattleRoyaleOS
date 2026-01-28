@@ -72,6 +72,22 @@ pub enum SvgaReg {
     ScratchSize = 29,
     /// SVGA_REG_MEM_REGS - Number of FIFO registers
     MemRegs = 30,
+    /// SVGA_REG_GMR_ID - GMR ID for GMR operations
+    GmrId = 32,
+    /// SVGA_REG_GMR_DESCRIPTOR - GMR descriptor physical address
+    GmrDescriptor = 33,
+    /// SVGA_REG_GMR_MAX_IDS - Maximum number of GMR IDs
+    GmrMaxIds = 34,
+    /// SVGA_REG_GMR_MAX_DESCRIPTOR_LENGTH - Maximum GMR descriptor length
+    GmrMaxDescriptorLength = 35,
+}
+
+/// GMR (Guest Memory Region) related constants
+pub mod gmr {
+    /// Invalid GMR ID
+    pub const INVALID_ID: u32 = 0xFFFFFFFF;
+    /// Use physical address directly (no GMR)
+    pub const FRAMEBUFFER: u32 = 0xFFFFFFFF;
 }
 
 /// SVGA version IDs for negotiation
@@ -155,6 +171,20 @@ pub mod cmd {
     pub const ANNOTATION_FILL: u32 = 39;
     /// SVGA_CMD_ANNOTATION_COPY - Annotation copy
     pub const ANNOTATION_COPY: u32 = 40;
+    /// SVGA_CMD_DEFINE_GMR2 - Define GMR2 region
+    pub const DEFINE_GMR2: u32 = 41;
+    /// SVGA_CMD_REMAP_GMR2 - Remap GMR2 pages
+    pub const REMAP_GMR2: u32 = 42;
+}
+
+/// SVGA3D transfer direction for DMA
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Svga3dTransferType {
+    /// Transfer from guest memory to surface (upload)
+    SurfaceDma = 0,
+    /// Transfer from surface to guest memory (download)
+    HostToGuest = 1,
 }
 
 /// Read a SVGA register

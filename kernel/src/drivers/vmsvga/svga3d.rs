@@ -37,6 +37,10 @@ pub mod cmd {
     pub const PRESENT: u32 = 1058;
     pub const DRAW_PRIMITIVES: u32 = 1063;
 
+    // Vertex/Index buffers
+    pub const SET_STREAM_SOURCE: u32 = 1064;
+    pub const SET_INDICES: u32 = 1065;
+
     // Shaders
     pub const SHADER_DEFINE: u32 = 1059;
     pub const SHADER_DESTROY: u32 = 1060;

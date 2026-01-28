@@ -9,8 +9,10 @@
 //! - Screen update commands for efficient display refresh
 //! - Rectangle fill and copy acceleration (when supported)
 //! - SVGA3D support for hardware-accelerated 3D rendering
+//! - GMR (Guest Memory Region) for DMA transfers
 
 pub mod fifo;
+pub mod gmr;
 pub mod regs;
 pub mod svga3d;
 
@@ -365,6 +367,9 @@ pub fn init() -> Option<(usize, usize)> {
         height,
         bpp
     );
+
+    // Initialize GMR support
+    gmr::init(io_base, capabilities);
 
     // Try to initialize SVGA3D
     drop(device); // Release lock before calling init_3d

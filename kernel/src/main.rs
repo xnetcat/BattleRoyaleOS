@@ -8,10 +8,13 @@
 
 extern crate alloc;
 
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Global benchmark mode flag - set by kernel_main, read by main_loop
 static BENCHMARK_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Global GPU batch enabled flag - checked once at init, used per-frame without locks
+static GPU_BATCH_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 mod boot;
 mod drivers;
@@ -29,6 +32,7 @@ use glam::{Mat4, Vec3};
 use graphics::{
     font,
     framebuffer::rgb,
+    gpu_batch,
     pipeline::{look_at, perspective, transform_and_bin},
     rasterizer::{self, rasterize_screen_triangle_in_tile},
     tiles::{self, TILE_BINS_LOCKFREE, TILE_QUEUE},
@@ -89,6 +93,13 @@ extern "C" fn _start() -> ! {
         serial_println!("ERROR: No framebuffer available");
         halt_loop();
     }
+
+    // Initialize GPU rendering integration
+    graphics::gpu_render::init();
+
+    // Initialize GPU batch renderer - sets GPU_BATCH_AVAILABLE flag
+    let gpu_batch_ok = graphics::gpu_batch::init(fb_width as u32, fb_height as u32);
+    GPU_BATCH_AVAILABLE.store(gpu_batch_ok, Ordering::Release);
 
     // Initialize z-buffer
     zbuffer::init(fb_width, fb_height);
@@ -954,15 +965,15 @@ fn render_game_frame(
     rotation: f32,
     current_fps: u32,
 ) {
+    // Begin frame with GPU acceleration (clears buffers)
+    let sky_color = rgb(50, 70, 100);
+    graphics::gpu_render::begin_frame(sky_color);
+
     // Acquire render context for this frame
     let render_ctx = match rasterizer::RenderContext::acquire() {
         Some(ctx) => ctx,
         None => return,
     };
-
-    // Clear back buffer and z-buffer (double buffering prevents flicker)
-    render_ctx.clear(rgb(50, 70, 100)); // Sky blue background
-    render_ctx.clear_zbuffer();
 
     // Get camera position from local player (or default orbit)
     let (camera_pos, camera_target, local_player_phase) = {
@@ -999,126 +1010,245 @@ fn render_game_frame(
     };
     let view = look_at(camera_pos, camera_target, Vec3::Y);
 
-    // === PARALLEL RENDERING (4 cores) ===
+    // Check GPU batch availability ONCE at frame start (lock-free atomic read)
+    let use_gpu_batch = GPU_BATCH_AVAILABLE.load(Ordering::Acquire);
 
-    // 1. Clear lock-free bins and reset triangle buffer
-    tiles::clear_lockfree_bins();
-    tiles::reset_triangle_buffer();
+    if use_gpu_batch {
+        // === GPU RENDERING PATH ===
+        // Hardware-accelerated rasterization via SVGA3D
 
-    // 2. Transform and bin terrain
-    let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
-    bin_mesh(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
+        // Begin GPU batch (clears GPU buffers)
+        gpu_batch::begin_batch();
 
-    // 3. Render game world entities
-    {
-        let world = game::world::GAME_WORLD.lock();
-        if let Some(w) = world.as_ref() {
-            // Render battle bus if active
-            if w.bus.active {
-                let bus_model = Mat4::from_translation(w.bus.position);
-                bin_mesh(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
-            }
+        // Transform and batch terrain
+        let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
+        bin_mesh_gpu(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
 
-            // Render map buildings (from POIs)
-            for i in 0..w.map.building_count {
-                if let Some(building) = &w.map.buildings[i] {
-                    let model = Mat4::from_translation(building.position)
-                        * Mat4::from_rotation_y(building.rotation)
-                        * Mat4::from_scale(Vec3::splat(1.5)); // Scale up buildings
-                    bin_mesh(house_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+        // Batch game world entities
+        {
+            let world = game::world::GAME_WORLD.lock();
+            if let Some(w) = world.as_ref() {
+                // Render battle bus if active
+                if w.bus.active {
+                    let bus_model = Mat4::from_translation(w.bus.position);
+                    bin_mesh_gpu(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
                 }
-            }
 
-            // Render vegetation (trees, rocks) - limit to nearby for performance
-            let render_range = 200.0;
-            for i in 0..w.map.vegetation_count {
-                if let Some(veg) = &w.map.vegetation[i] {
-                    // Distance culling from camera
-                    let dx = veg.position.x - camera_pos.x;
-                    let dz = veg.position.z - camera_pos.z;
-                    if dx * dx + dz * dz > render_range * render_range {
+                // Render map buildings (from POIs)
+                for i in 0..w.map.building_count {
+                    if let Some(building) = &w.map.buildings[i] {
+                        let model = Mat4::from_translation(building.position)
+                            * Mat4::from_rotation_y(building.rotation)
+                            * Mat4::from_scale(Vec3::splat(1.5));
+                        bin_mesh_gpu(house_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                    }
+                }
+
+                // Render vegetation (trees, rocks) - limit to nearby for performance
+                let render_range = 200.0;
+                for i in 0..w.map.vegetation_count {
+                    if let Some(veg) = &w.map.vegetation[i] {
+                        let dx = veg.position.x - camera_pos.x;
+                        let dz = veg.position.z - camera_pos.z;
+                        if dx * dx + dz * dz > render_range * render_range {
+                            continue;
+                        }
+
+                        let model = Mat4::from_translation(veg.position)
+                            * Mat4::from_scale(Vec3::splat(veg.scale));
+
+                        match veg.veg_type {
+                            game::map::VegetationType::TreePine => {
+                                bin_mesh_gpu(tree_pine_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::TreeOak | game::map::VegetationType::TreeBirch => {
+                                bin_mesh_gpu(tree_oak_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::Rock => {
+                                bin_mesh_gpu(rock_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::Bush => {
+                                let bush_model = model * Mat4::from_scale(Vec3::splat(0.5));
+                                bin_mesh_gpu(tree_oak_mesh, &bush_model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                        }
+                    }
+                }
+
+                // Render loot drops (chests and items)
+                for drop in w.loot.get_active_drops() {
+                    let model = Mat4::from_translation(drop.position)
+                        * Mat4::from_rotation_y(rotation * 2.0);
+                    bin_mesh_gpu(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                }
+
+                // Render all players
+                for player in &w.players {
+                    if !player.is_alive() || player.phase == PlayerPhase::OnBus {
                         continue;
                     }
 
-                    let model = Mat4::from_translation(veg.position)
-                        * Mat4::from_scale(Vec3::splat(veg.scale));
+                    let model = Mat4::from_translation(player.position)
+                        * Mat4::from_rotation_y(player.yaw);
+                    bin_mesh_gpu(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
 
-                    match veg.veg_type {
-                        game::map::VegetationType::TreePine => {
-                            bin_mesh(tree_pine_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                    if player.phase == PlayerPhase::Gliding {
+                        let glider_offset = Vec3::new(0.0, 2.5, 0.0);
+                        let glider_model = Mat4::from_translation(player.position + glider_offset)
+                            * Mat4::from_rotation_y(player.yaw);
+                        bin_mesh_gpu(glider_mesh, &glider_model, &view, projection, fb_width as f32, fb_height as f32);
+                    }
+                }
+
+                // Render player-built buildings
+                for building in &w.buildings {
+                    let model = Mat4::from_translation(building.position)
+                        * Mat4::from_rotation_y(building.rotation);
+                    bin_mesh_gpu(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                }
+
+                // Render 3D storm wall
+                let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
+                    * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
+                bin_mesh_gpu(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);
+            }
+        }
+
+        // End GPU batch (flushes remaining triangles and presents)
+        gpu_batch::end_batch();
+
+        // Drop render context (not used in GPU path, but acquired for API consistency)
+        drop(render_ctx);
+
+    } else {
+        // === SOFTWARE RENDERING PATH ===
+        // Parallel tile-based software rasterization (4 cores)
+
+        // Debug: only print once to avoid spam
+        static PRINTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        if !PRINTED.swap(true, Ordering::Relaxed) {
+            serial_println!("RENDER: Using software path");
+        }
+
+        // 1. Clear lock-free bins and reset triangle buffer
+        tiles::clear_lockfree_bins();
+        tiles::reset_triangle_buffer();
+
+        // 2. Transform and bin terrain
+        let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
+        bin_mesh(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
+
+        // 3. Render game world entities
+        {
+            let world = game::world::GAME_WORLD.lock();
+            if let Some(w) = world.as_ref() {
+                // Render battle bus if active
+                if w.bus.active {
+                    let bus_model = Mat4::from_translation(w.bus.position);
+                    bin_mesh(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
+                }
+
+                // Render map buildings (from POIs)
+                for i in 0..w.map.building_count {
+                    if let Some(building) = &w.map.buildings[i] {
+                        let model = Mat4::from_translation(building.position)
+                            * Mat4::from_rotation_y(building.rotation)
+                            * Mat4::from_scale(Vec3::splat(1.5)); // Scale up buildings
+                        bin_mesh(house_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                    }
+                }
+
+                // Render vegetation (trees, rocks) - limit to nearby for performance
+                let render_range = 200.0;
+                for i in 0..w.map.vegetation_count {
+                    if let Some(veg) = &w.map.vegetation[i] {
+                        // Distance culling from camera
+                        let dx = veg.position.x - camera_pos.x;
+                        let dz = veg.position.z - camera_pos.z;
+                        if dx * dx + dz * dz > render_range * render_range {
+                            continue;
                         }
-                        game::map::VegetationType::TreeOak | game::map::VegetationType::TreeBirch => {
-                            bin_mesh(tree_oak_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
-                        }
-                        game::map::VegetationType::Rock => {
-                            bin_mesh(rock_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
-                        }
-                        game::map::VegetationType::Bush => {
-                            let bush_model = model * Mat4::from_scale(Vec3::splat(0.5));
-                            bin_mesh(tree_oak_mesh, &bush_model, &view, projection, fb_width as f32, fb_height as f32);
+
+                        let model = Mat4::from_translation(veg.position)
+                            * Mat4::from_scale(Vec3::splat(veg.scale));
+
+                        match veg.veg_type {
+                            game::map::VegetationType::TreePine => {
+                                bin_mesh(tree_pine_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::TreeOak | game::map::VegetationType::TreeBirch => {
+                                bin_mesh(tree_oak_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::Rock => {
+                                bin_mesh(rock_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
+                            game::map::VegetationType::Bush => {
+                                let bush_model = model * Mat4::from_scale(Vec3::splat(0.5));
+                                bin_mesh(tree_oak_mesh, &bush_model, &view, projection, fb_width as f32, fb_height as f32);
+                            }
                         }
                     }
                 }
-            }
 
-            // Render loot drops (chests and items)
-            for drop in w.loot.get_active_drops() {
-                let model = Mat4::from_translation(drop.position)
-                    * Mat4::from_rotation_y(rotation * 2.0); // Rotate loot for visibility
-                bin_mesh(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
-            }
-
-            // Render all players
-            for player in &w.players {
-                if !player.is_alive() || player.phase == PlayerPhase::OnBus {
-                    continue;
+                // Render loot drops (chests and items)
+                for drop in w.loot.get_active_drops() {
+                    let model = Mat4::from_translation(drop.position)
+                        * Mat4::from_rotation_y(rotation * 2.0); // Rotate loot for visibility
+                    bin_mesh(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                let model = Mat4::from_translation(player.position)
-                    * Mat4::from_rotation_y(player.yaw);
-                bin_mesh(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                // Render all players
+                for player in &w.players {
+                    if !player.is_alive() || player.phase == PlayerPhase::OnBus {
+                        continue;
+                    }
 
-                // Render glider for players who are gliding
-                if player.phase == PlayerPhase::Gliding {
-                    let glider_offset = Vec3::new(0.0, 2.5, 0.0); // Above player
-                    let glider_model = Mat4::from_translation(player.position + glider_offset)
+                    let model = Mat4::from_translation(player.position)
                         * Mat4::from_rotation_y(player.yaw);
-                    bin_mesh(glider_mesh, &glider_model, &view, projection, fb_width as f32, fb_height as f32);
+                    bin_mesh(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+
+                    // Render glider for players who are gliding
+                    if player.phase == PlayerPhase::Gliding {
+                        let glider_offset = Vec3::new(0.0, 2.5, 0.0); // Above player
+                        let glider_model = Mat4::from_translation(player.position + glider_offset)
+                            * Mat4::from_rotation_y(player.yaw);
+                        bin_mesh(glider_mesh, &glider_model, &view, projection, fb_width as f32, fb_height as f32);
+                    }
                 }
-            }
 
-            // Render player-built buildings
-            for building in &w.buildings {
-                let model = Mat4::from_translation(building.position)
-                    * Mat4::from_rotation_y(building.rotation);
-                bin_mesh(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
-            }
+                // Render player-built buildings
+                for building in &w.buildings {
+                    let model = Mat4::from_translation(building.position)
+                        * Mat4::from_rotation_y(building.rotation);
+                    bin_mesh(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
+                }
 
-            // Render 3D storm wall
-            // Scale the unit cylinder mesh to match the storm radius
-            let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
-                * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
-            bin_mesh(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);
+                // Render 3D storm wall
+                // Scale the unit cylinder mesh to match the storm radius
+                let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
+                    * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
+                bin_mesh(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);
+            }
         }
+
+        // 4. Reset tile work queue
+        tiles::reset();
+
+        // 5. Signal worker cores (1-3) to start rendering
+        smp::scheduler::start_render();
+
+        // 6. Core 0 also helps rasterize tiles
+        render_worker(0);
+
+        // 7. Wait for all cores (0-3) to finish at the barrier
+        smp::sync::RENDER_BARRIER.wait();
+
+        // 8. Signal render complete (allows worker cores to wait for next frame)
+        smp::scheduler::end_render();
+
+        // Drop render context before drawing 2D UI
+        drop(render_ctx);
     }
-
-    // 3. Reset tile work queue
-    tiles::reset();
-
-    // 4. Signal worker cores (1-3) to start rendering
-    smp::scheduler::start_render();
-
-    // 5. Core 0 also helps rasterize tiles
-    render_worker(0);
-
-    // 6. Wait for all cores (0-3) to finish at the barrier
-    smp::sync::RENDER_BARRIER.wait();
-
-    // 7. Signal render complete (allows worker cores to wait for next frame)
-    smp::scheduler::end_render();
-
-    // Drop render context before drawing 2D UI
-    drop(render_ctx);
 
     // === 2D UI RENDERING ===
 
@@ -1175,8 +1305,8 @@ fn render_game_frame(
         }
     }
 
-    // Present: copy back buffer to display
-    graphics::gpu::present();
+    // End frame and present to display (uses GPU acceleration if available)
+    graphics::gpu_render::end_frame();
 }
 
 /// Draw storm overlay effect when player is in storm
@@ -1428,7 +1558,8 @@ fn draw_minimap(local_player_id: Option<u8>, world: &game::world::GameWorld, fb_
 }
 
 /// Transform mesh triangles, create ScreenTriangles, and bin them to tiles
-/// Returns the number of triangles successfully binned
+/// Uses GPU batch rendering when available, falls back to software rasterization
+/// Returns the number of triangles successfully processed
 fn bin_mesh(
     mesh: &mesh::Mesh,
     model: &Mat4,
@@ -1439,6 +1570,8 @@ fn bin_mesh(
 ) -> usize {
     let mut binned = 0;
 
+    // Use the simple software path - GPU batch will be used when SVGA3D is available
+    // The is_enabled() check is done once at startup, not per-triangle
     for i in 0..mesh.triangle_count() {
         if let Some((v0, v1, v2)) = mesh.get_triangle(i) {
             // Transform and create ScreenTriangle
@@ -1463,6 +1596,58 @@ fn bin_mesh(
     }
 
     binned
+}
+
+/// Bin mesh triangles directly to GPU batch (GPU rendering path)
+/// Transforms vertices and adds them to the GPU batch for hardware rasterization
+/// This is the GPU-accelerated alternative to bin_mesh() for software rendering
+fn bin_mesh_gpu(
+    mesh: &mesh::Mesh,
+    model: &Mat4,
+    view: &Mat4,
+    projection: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+) -> usize {
+    use graphics::pipeline::transform_triangle;
+
+    let mut added = 0;
+
+    for i in 0..mesh.triangle_count() {
+        if let Some((v0, v1, v2)) = mesh.get_triangle(i) {
+            // Transform and perform culling (same as software path)
+            if let Some((tv0, tv1, tv2)) = transform_triangle(
+                v0,
+                v1,
+                v2,
+                model,
+                view,
+                projection,
+                fb_width,
+                fb_height,
+            ) {
+                // Add transformed triangle to GPU batch
+                let success = gpu_batch::add_screen_triangle(
+                    tv0.position.x, tv0.position.y, tv0.position.z,
+                    tv0.color.x, tv0.color.y, tv0.color.z,
+                    tv1.position.x, tv1.position.y, tv1.position.z,
+                    tv1.color.x, tv1.color.y, tv1.color.z,
+                    tv2.position.x, tv2.position.y, tv2.position.z,
+                    tv2.color.x, tv2.color.y, tv2.color.z,
+                );
+
+                if success {
+                    added += 1;
+                    // Flush batch if full
+                    if gpu_batch::needs_flush() {
+                        gpu_batch::flush_batch();
+                    }
+                }
+            }
+        }
+    }
+
+    added
 }
 
 /// Render worker for rasterizer cores (including Core 0)

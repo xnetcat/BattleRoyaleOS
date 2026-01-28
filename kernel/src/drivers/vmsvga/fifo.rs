@@ -580,4 +580,152 @@ impl VmsvgaFifo {
         }
         self.read_reg(fifo_reg::HWVERSION_3D)
     }
+
+    /// DMA transfer from GMR to surface
+    /// Used to upload vertex data from guest memory to GPU surface
+    pub fn cmd_3d_surface_dma(
+        &self,
+        gmr_id: u32,
+        gmr_offset: u32,
+        surface_id: u32,
+        surface_offset: u32,
+        size: u32,
+        transfer_to_surface: bool,
+    ) -> bool {
+        use super::svga3d::cmd;
+
+        // SVGA3dCmdSurfaceDMA structure:
+        // guest: SVGA3dGuestImage (ptr: SVGAGuestPtr, pitch)
+        // host: SVGA3dSurfaceImageId (sid, face, mipmap)
+        // transfer: SVGA3dTransferType
+        // then array of SVGA3dCopyBox
+
+        // SVGAGuestPtr: gmr_id, offset
+        // We use a single copy box that covers the entire transfer
+
+        let transfer_type = if transfer_to_surface { 0u32 } else { 1u32 };
+
+        let data = [
+            // Guest image (SVGAGuestPtr + pitch)
+            gmr_id,       // guest.ptr.gmrId
+            gmr_offset,   // guest.ptr.offset
+            size,         // guest.pitch (bytes per row, for 1D it's the total size)
+            // Host image (SVGA3dSurfaceImageId)
+            surface_id,   // host.sid
+            0,            // host.face
+            0,            // host.mipmap
+            // Transfer direction
+            transfer_type,
+            // Number of copy boxes
+            1,
+            // Copy box (srcx, srcy, srcz, x, y, z, w, h, d)
+            0, 0, 0,              // src xyz
+            surface_offset, 0, 0, // dst xyz (we use x as byte offset for buffers)
+            size, 1, 1,           // width, height, depth
+        ];
+
+        self.write_3d_cmd(cmd::SURFACE_DMA, &data)
+    }
+
+    /// Upload vertex buffer data from GMR to a surface
+    pub fn cmd_3d_upload_vertex_buffer(
+        &self,
+        gmr_id: u32,
+        surface_id: u32,
+        size: u32,
+    ) -> bool {
+        self.cmd_3d_surface_dma(gmr_id, 0, surface_id, 0, size, true)
+    }
+
+    /// Set vertex stream source for drawing
+    /// stride is bytes per vertex
+    pub fn cmd_3d_set_stream_source(
+        &self,
+        cid: u32,
+        stream_index: u32,
+        surface_id: u32,
+        offset: u32,
+        stride: u32,
+    ) -> bool {
+        use super::svga3d::cmd;
+
+        // SVGA3dCmdSetStreamSource: cid, stream[].sid, stream[].offset, stream[].stride
+        let data = [
+            cid,
+            1,            // numStreams
+            stream_index,
+            surface_id,
+            offset,
+            stride,
+        ];
+
+        self.write_3d_cmd(cmd::SET_STREAM_SOURCE, &data)
+    }
+
+    /// Draw primitives with inline vertex declarations
+    /// This is a simplified version for drawing triangle lists with position+color vertices
+    pub fn cmd_3d_draw_primitives_simple(
+        &self,
+        cid: u32,
+        vertex_surface_id: u32,
+        num_vertices: u32,
+        vertex_stride: u32,
+    ) -> bool {
+        use super::svga3d::cmd;
+
+        // First set the vertex stream
+        if !self.cmd_3d_set_stream_source(cid, 0, vertex_surface_id, 0, vertex_stride) {
+            return false;
+        }
+
+        // Vertex declaration format:
+        // identity (stream, offset, type, method, usage, usage_index)
+        // We use: FLOAT3 for position (0-11), D3DCOLOR for color (12-15) = 16 bytes total
+
+        // Vertex declarations (each is 6 u32s):
+        // Position: stream 0, offset 0, type FLOAT3 (2), method DEFAULT (0), usage POSITION (0), index 0
+        // Color: stream 0, offset 12, type D3DCOLOR (4), method DEFAULT (0), usage COLOR (10), index 0
+        let vertex_decls: [u32; 12] = [
+            // Position declaration
+            0,   // stream
+            0,   // offset
+            2,   // type: FLOAT3
+            0,   // method: DEFAULT
+            0,   // usage: POSITION
+            0,   // usageIndex
+            // Color declaration
+            0,   // stream
+            12,  // offset (after xyz floats)
+            4,   // type: D3DCOLOR
+            0,   // method: DEFAULT
+            10,  // usage: COLOR
+            0,   // usageIndex
+        ];
+
+        // Primitive range:
+        // primitiveType, primitiveCount, indexArray.surfaceId, indexArray.offset, indexWidth,
+        // indexBias, minIndex, maxIndex
+        let num_triangles = num_vertices / 3;
+        let ranges: [u32; 8] = [
+            5,             // primitiveType: TRIANGLELIST (5)
+            num_triangles, // primitiveCount
+            0xFFFFFFFF,    // indexArray.surfaceId (no index buffer, use 0xFFFFFFFF)
+            0,             // indexArray.offset
+            0,             // indexWidth (no index buffer)
+            0,             // indexBias
+            0,             // minIndex
+            num_vertices - 1, // maxIndex
+        ];
+
+        // Build the full DRAW_PRIMITIVES command
+        let mut data = vec![
+            cid,
+            2,  // numVertexDecls
+            1,  // numRanges
+        ];
+        data.extend_from_slice(&vertex_decls);
+        data.extend_from_slice(&ranges);
+
+        self.write_3d_cmd(cmd::DRAW_PRIMITIVES, &data)
+    }
 }
