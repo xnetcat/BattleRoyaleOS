@@ -26,19 +26,20 @@ pub const JUMP_VELOCITY: f32 = 15.0;
 pub const GRAVITY: f32 = 30.0;
 
 /// Freefall speeds
-pub const FREEFALL_SPEED_NORMAL: f32 = 50.0;
-pub const FREEFALL_SPEED_DIVE: f32 = 80.0;    // Holding forward
-pub const FREEFALL_SPEED_SLOW: f32 = 30.0;    // Holding back
-pub const FREEFALL_HORIZONTAL: f32 = 20.0;    // Max horizontal speed in freefall
+pub const FREEFALL_SPEED_NORMAL: f32 = 70.0;   // Normal fall (was 50)
+pub const FREEFALL_SPEED_DIVE: f32 = 120.0;    // Diving (was 80)
+pub const FREEFALL_SPEED_SLOW: f32 = 40.0;     // Floating (was 30)
+pub const FREEFALL_HORIZONTAL: f32 = 30.0;     // Horizontal steering (was 20)
 
 /// Glider speeds
-pub const GLIDER_VERTICAL_SPEED: f32 = 10.0;
-pub const GLIDER_HORIZONTAL_SPEED: f32 = 15.0;
-pub const GLIDER_BOOST_SPEED: f32 = 25.0;     // Holding forward
+pub const GLIDER_VERTICAL_SPEED: f32 = 25.0;       // Normal descent (was 10)
+pub const GLIDER_DIVE_SPEED: f32 = 45.0;           // Diving descent (hold forward)
+pub const GLIDER_HORIZONTAL_SPEED: f32 = 20.0;     // Normal horizontal (was 15)
+pub const GLIDER_BOOST_SPEED: f32 = 35.0;          // Diving horizontal (was 25)
 
 /// Glider deploy heights
-pub const AUTO_DEPLOY_HEIGHT: f32 = 100.0;
-pub const MANUAL_DEPLOY_MIN_HEIGHT: f32 = 200.0;
+pub const AUTO_DEPLOY_HEIGHT: f32 = 50.0;          // Deploy closer to ground (was 100)
+pub const MANUAL_DEPLOY_MIN_HEIGHT: f32 = 100.0;   // Can deploy earlier (was 200)
 
 /// Player entity
 #[derive(Debug, Clone)]
@@ -191,19 +192,21 @@ impl Player {
         let forward = Vec3::new(libm::sinf(self.yaw), 0.0, libm::cosf(self.yaw));
         let right = Vec3::new(libm::cosf(self.yaw), 0.0, -libm::sinf(self.yaw));
 
-        // Forward boost or normal speed
-        let speed = if input.forward > 0 {
-            GLIDER_BOOST_SPEED
+        // Forward = dive (faster descent + faster horizontal)
+        // Normal = glide (slower descent)
+        let (h_speed, v_speed) = if input.forward > 0 {
+            (GLIDER_BOOST_SPEED, GLIDER_DIVE_SPEED)
         } else {
-            GLIDER_HORIZONTAL_SPEED
+            (GLIDER_HORIZONTAL_SPEED, GLIDER_VERTICAL_SPEED)
         };
 
-        self.velocity.x = forward.x * speed;
-        self.velocity.z = forward.z * speed;
+        self.velocity.x = forward.x * h_speed;
+        self.velocity.z = forward.z * h_speed;
+        self.velocity.y = -v_speed; // Set descent rate based on input
 
         // Strafe steering
-        self.velocity.x += right.x * input.strafe as f32 * 5.0;
-        self.velocity.z += right.z * input.strafe as f32 * 5.0;
+        self.velocity.x += right.x * input.strafe as f32 * 8.0;
+        self.velocity.z += right.z * input.strafe as f32 * 8.0;
     }
 
     /// Apply input when grounded
@@ -303,8 +306,11 @@ impl Player {
 
     /// Update gliding physics
     fn update_gliding(&mut self, dt: f32, buildings: &[crate::game::building::BuildPiece], terrain_height: f32) {
-        // Constant descent rate
-        self.velocity.y = -GLIDER_VERTICAL_SPEED;
+        // Velocity is set by apply_gliding_input (including dive mechanic)
+        // Only set default if somehow not set
+        if self.velocity.y >= 0.0 {
+            self.velocity.y = -GLIDER_VERTICAL_SPEED;
+        }
 
         // Update position with collision check
         let next_pos = self.position + self.velocity * dt;

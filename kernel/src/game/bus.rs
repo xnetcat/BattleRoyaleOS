@@ -2,8 +2,8 @@
 
 use glam::Vec3;
 
-/// Battle bus starting height (lowered for better terrain visibility)
-pub const BUS_HEIGHT: f32 = 200.0;
+/// Battle bus starting height (lowered for faster landing)
+pub const BUS_HEIGHT: f32 = 150.0;
 
 /// Battle bus speed
 pub const BUS_SPEED: f32 = 100.0;

@@ -30,6 +30,7 @@ use core::panic::PanicInfo;
 use core::ffi::CStr;
 use glam::{Mat4, Vec3};
 use graphics::{
+    culling::CullContext,
     font,
     framebuffer::rgb,
     gpu_batch,
@@ -111,6 +112,9 @@ extern "C" fn _start() -> ! {
         serial_println!("Tile system: {} tiles", queue.tile_count());
         tiles::init_bins(queue.tile_count());
     }
+
+    // Initialize vsync subsystem
+    graphics::vsync::init();
 
     // Print CPU count
     let cpu_count = smp::scheduler::cpu_count();
@@ -210,21 +214,17 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     let mut frame_count = 0u32;
     let mut rotation = 0.0f32;
 
-    // FPS tracking
-    let mut last_fps_time = read_tsc();
-    let mut fps_frame_count = 0u32;
-    let mut current_fps = 0u32;
-    // Estimate TSC frequency (assume ~2GHz for QEMU)
-    let tsc_per_second: u64 = 2_000_000_000;
+    // Frame timer with vsync support (replaces manual FPS tracking and busy-waiting)
+    // Uses HLT instruction for CPU idle when waiting, reducing power consumption
+    let mut frame_timer = graphics::vsync::FrameTimer::new();
 
-    // Frame limiter: target 60 FPS to prevent flickering
-    let target_fps: u64 = 60;
-    let tsc_per_frame = tsc_per_second / target_fps;
-    let mut last_frame_time = read_tsc();
+    // TSC frequency for benchmark reporting (assume ~2GHz for QEMU)
+    let tsc_per_second: u64 = 2_000_000_000;
 
     // Create reusable meshes for game entities
     // Terrain must match MAP_SIZE (2000.0) so players can see/land on it from bus
-    let terrain = mesh::create_terrain_grid(2000.0, 100, Vec3::new(0.2, 0.6, 0.3));
+    // Terrain: 40 subdivisions = 3,200 triangles (reduced from 100 = 20,000 for performance)
+    let terrain = mesh::create_terrain_grid(2000.0, 40, Vec3::new(0.2, 0.6, 0.3));
     let player_mesh = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
     let wall_mesh = mesh::create_wall_mesh(Vec3::new(0.6, 0.5, 0.4));
     let bus_mesh = mesh::create_battle_bus_mesh();
@@ -318,7 +318,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                 let secs = elapsed as f64 / tsc_per_second as f64;
                 let avg_fps = benchmark_frames as f64 / secs;
                 serial_println!("BENCHMARK: {} frames in {:.2}s = {:.1} avg FPS (current: {})",
-                    benchmark_frames, secs, avg_fps, current_fps);
+                    benchmark_frames, secs, avg_fps, frame_timer.fps());
             }
         }
 
@@ -621,7 +621,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                     &glider_mesh, &tree_pine_mesh, &tree_oak_mesh, &rock_mesh,
                     &chest_mesh, &house_mesh, &storm_wall_mesh,
                     &projection, local_player_id, rotation,
-                    current_fps,
+                    frame_timer.fps(),
                 );
                 rotation += 0.01;
             }
@@ -639,29 +639,21 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
             }
         }
 
-        // Update FPS counter
-        fps_frame_count += 1;
-        let now = read_tsc();
-        let elapsed = now.wrapping_sub(last_fps_time);
-        if elapsed >= tsc_per_second {
-            current_fps = fps_frame_count;
-            serial_println!("FPS: {} (state: {:?})", current_fps, current_state);
-            fps_frame_count = 0;
-            last_fps_time = now;
-        }
-
         frame_count = frame_count.wrapping_add(1);
 
-        // Frame limiter: wait until target frame time has elapsed
-        loop {
-            let now = read_tsc();
-            let elapsed = now.wrapping_sub(last_frame_time);
-            if elapsed >= tsc_per_frame {
-                last_frame_time = now;
-                break;
-            }
-            core::hint::spin_loop();
+        // End frame - handles vsync/frame timing with HLT for CPU idle
+        // Uses VGA vertical retrace if available, otherwise timer-based sync
+        let on_time = frame_timer.end_frame();
+
+        // Log FPS periodically (FrameTimer tracks this internally)
+        let current_fps = frame_timer.fps();
+        if frame_count % 60 == 0 && current_fps > 0 {
+            serial_println!("FPS: {} (state: {:?}) vsync:{} on_time:{}",
+                current_fps, current_state, frame_timer.vsync_enabled(), on_time);
         }
+
+        // Begin next frame timing
+        frame_timer.begin_frame();
     }
 
     halt_loop();
@@ -1020,23 +1012,30 @@ fn render_game_frame(
         // Begin GPU batch (clears GPU buffers)
         gpu_batch::begin_batch();
 
+        // Create culling context for frustum + distance culling
+        let cull_ctx = CullContext::new(&view, projection, camera_pos)
+            .with_distances(0.5, 300.0);
+
         // Transform and batch terrain
         let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
         bin_mesh_gpu(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
 
-        // Batch game world entities
+        // Batch game world entities with frustum culling
         {
             let world = game::world::GAME_WORLD.lock();
             if let Some(w) = world.as_ref() {
-                // Render battle bus if active
-                if w.bus.active {
+                // Render battle bus if active and visible
+                if w.bus.active && cull_ctx.should_render(w.bus.position, 10.0) {
                     let bus_model = Mat4::from_translation(w.bus.position);
                     bin_mesh_gpu(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render map buildings (from POIs)
+                // Render map buildings with frustum culling
                 for i in 0..w.map.building_count {
                     if let Some(building) = &w.map.buildings[i] {
+                        if !cull_ctx.should_render(building.position, 15.0) {
+                            continue;
+                        }
                         let model = Mat4::from_translation(building.position)
                             * Mat4::from_rotation_y(building.rotation)
                             * Mat4::from_scale(Vec3::splat(1.5));
@@ -1044,13 +1043,10 @@ fn render_game_frame(
                     }
                 }
 
-                // Render vegetation (trees, rocks) - limit to nearby for performance
-                let render_range = 200.0;
+                // Render vegetation with frustum culling
                 for i in 0..w.map.vegetation_count {
                     if let Some(veg) = &w.map.vegetation[i] {
-                        let dx = veg.position.x - camera_pos.x;
-                        let dz = veg.position.z - camera_pos.z;
-                        if dx * dx + dz * dz > render_range * render_range {
+                        if !cull_ctx.should_render(veg.position, 5.0 * veg.scale) {
                             continue;
                         }
 
@@ -1075,14 +1071,17 @@ fn render_game_frame(
                     }
                 }
 
-                // Render loot drops (chests and items)
+                // Render loot drops with culling
                 for drop in w.loot.get_active_drops() {
+                    if !cull_ctx.should_render(drop.position, 2.0) {
+                        continue;
+                    }
                     let model = Mat4::from_translation(drop.position)
                         * Mat4::from_rotation_y(rotation * 2.0);
                     bin_mesh_gpu(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render all players
+                // Render all players (always render, they're important)
                 for player in &w.players {
                     if !player.is_alive() || player.phase == PlayerPhase::OnBus {
                         continue;
@@ -1100,14 +1099,17 @@ fn render_game_frame(
                     }
                 }
 
-                // Render player-built buildings
+                // Render player-built buildings with culling
                 for building in &w.buildings {
+                    if !cull_ctx.should_render(building.position, 5.0) {
+                        continue;
+                    }
                     let model = Mat4::from_translation(building.position)
                         * Mat4::from_rotation_y(building.rotation);
                     bin_mesh_gpu(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render 3D storm wall
+                // Render 3D storm wall (always render, important visual)
                 let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
                     * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
                 bin_mesh_gpu(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);
@@ -1128,38 +1130,43 @@ fn render_game_frame(
         tiles::clear_lockfree_bins();
         tiles::reset_triangle_buffer();
 
-        // 2. Transform and bin terrain
+        // 2. Create culling context for frustum + distance culling
+        let cull_ctx = CullContext::new(&view, projection, camera_pos)
+            .with_distances(0.5, 300.0); // Near 0.5, Far 300 units
+
+        // 3. Transform and bin terrain (always render, but reduced complexity)
         let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
         bin_mesh(terrain, &terrain_model, &view, projection, fb_width as f32, fb_height as f32);
 
-        // 3. Render game world entities
+        // 4. Render game world entities with frustum culling
         {
             let world = game::world::GAME_WORLD.lock();
             if let Some(w) = world.as_ref() {
-                // Render battle bus if active
-                if w.bus.active {
+                // Render battle bus if active and visible
+                if w.bus.active && cull_ctx.should_render(w.bus.position, 10.0) {
                     let bus_model = Mat4::from_translation(w.bus.position);
                     bin_mesh(bus_mesh, &bus_model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render map buildings (from POIs)
+                // Render map buildings with frustum culling
                 for i in 0..w.map.building_count {
                     if let Some(building) = &w.map.buildings[i] {
+                        // Cull buildings outside view frustum
+                        if !cull_ctx.should_render(building.position, 15.0) {
+                            continue;
+                        }
                         let model = Mat4::from_translation(building.position)
                             * Mat4::from_rotation_y(building.rotation)
-                            * Mat4::from_scale(Vec3::splat(1.5)); // Scale up buildings
+                            * Mat4::from_scale(Vec3::splat(1.5));
                         bin_mesh(house_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                     }
                 }
 
-                // Render vegetation (trees, rocks) - limit to nearby for performance
-                let render_range = 200.0;
+                // Render vegetation with frustum + distance culling
                 for i in 0..w.map.vegetation_count {
                     if let Some(veg) = &w.map.vegetation[i] {
-                        // Distance culling from camera
-                        let dx = veg.position.x - camera_pos.x;
-                        let dz = veg.position.z - camera_pos.z;
-                        if dx * dx + dz * dz > render_range * render_range {
+                        // Combined frustum + distance culling (100m for vegetation)
+                        if !cull_ctx.should_render(veg.position, 5.0 * veg.scale) {
                             continue;
                         }
 
@@ -1184,14 +1191,17 @@ fn render_game_frame(
                     }
                 }
 
-                // Render loot drops (chests and items)
+                // Render loot drops with culling
                 for drop in w.loot.get_active_drops() {
+                    if !cull_ctx.should_render(drop.position, 2.0) {
+                        continue;
+                    }
                     let model = Mat4::from_translation(drop.position)
-                        * Mat4::from_rotation_y(rotation * 2.0); // Rotate loot for visibility
+                        * Mat4::from_rotation_y(rotation * 2.0);
                     bin_mesh(chest_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render all players
+                // Render all players (always render, they're important)
                 for player in &w.players {
                     if !player.is_alive() || player.phase == PlayerPhase::OnBus {
                         continue;
@@ -1201,24 +1211,25 @@ fn render_game_frame(
                         * Mat4::from_rotation_y(player.yaw);
                     bin_mesh(player_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
 
-                    // Render glider for players who are gliding
                     if player.phase == PlayerPhase::Gliding {
-                        let glider_offset = Vec3::new(0.0, 2.5, 0.0); // Above player
+                        let glider_offset = Vec3::new(0.0, 2.5, 0.0);
                         let glider_model = Mat4::from_translation(player.position + glider_offset)
                             * Mat4::from_rotation_y(player.yaw);
                         bin_mesh(glider_mesh, &glider_model, &view, projection, fb_width as f32, fb_height as f32);
                     }
                 }
 
-                // Render player-built buildings
+                // Render player-built buildings with culling
                 for building in &w.buildings {
+                    if !cull_ctx.should_render(building.position, 5.0) {
+                        continue;
+                    }
                     let model = Mat4::from_translation(building.position)
                         * Mat4::from_rotation_y(building.rotation);
                     bin_mesh(wall_mesh, &model, &view, projection, fb_width as f32, fb_height as f32);
                 }
 
-                // Render 3D storm wall
-                // Scale the unit cylinder mesh to match the storm radius
+                // Render 3D storm wall (always render, important visual)
                 let storm_model = Mat4::from_translation(Vec3::new(w.storm.center.x, 0.0, w.storm.center.z))
                     * Mat4::from_scale(Vec3::new(w.storm.radius, 1.0, w.storm.radius));
                 bin_mesh(storm_wall_mesh, &storm_model, &view, projection, fb_width as f32, fb_height as f32);

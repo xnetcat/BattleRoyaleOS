@@ -140,16 +140,7 @@ pub fn end_frame() {
     // Present via GPU if available
     gpu::present();
 
-    // Update frame stats
-    let state = GPU_RENDER.lock();
-    if state.frame_count % 300 == 0 {
-        serial_println!(
-            "GPU Render: frame {} - {} triangles (gpu={})",
-            state.frame_count,
-            state.triangles_this_frame,
-            state.gpu_enabled
-        );
-    }
+    // Frame stats silently tracked (use get_stats() to query)
 }
 
 /// Convert vertex color to packed ARGB
