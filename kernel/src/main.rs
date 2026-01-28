@@ -523,7 +523,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
                     // Update camera rotation with mouse movement ONLY
                     // Mouse delta is accumulated, so we use it and reset
                     player_yaw += mouse.delta_x as f32 * MOUSE_SENSITIVITY;
-                    player_pitch += mouse.delta_y as f32 * MOUSE_SENSITIVITY;
+                    // Subtract delta_y: mouse up (positive screen delta) = look up (positive pitch)
+                    player_pitch -= mouse.delta_y as f32 * MOUSE_SENSITIVITY;
 
                     // Clamp pitch to prevent camera flipping (roughly -85 to +85 degrees)
                     player_pitch = player_pitch.clamp(-1.48, 1.48);
@@ -981,13 +982,22 @@ fn render_game_frame(
                     PlayerPhase::Freefall | PlayerPhase::Gliding => 4.0,
                     _ => 3.0,
                 };
+                // Third-person camera behind and above player
+                // Incorporates both yaw (horizontal) and pitch (vertical) for proper look
                 let cam_offset = Vec3::new(
-                    -libm::sinf(player.yaw) * cam_dist,
-                    cam_height,
-                    -libm::cosf(player.yaw) * cam_dist,
+                    -libm::sinf(player.yaw) * libm::cosf(player.pitch) * cam_dist,
+                    cam_height + libm::sinf(player.pitch) * cam_dist * 0.5,
+                    -libm::cosf(player.yaw) * libm::cosf(player.pitch) * cam_dist,
                 );
                 let pos = player.position + cam_offset;
-                let target = player.position + Vec3::new(0.0, 1.0, 0.0);
+
+                // Look target: where the player is aiming (uses pitch for up/down look)
+                let look_dist = 10.0;
+                let target = player.position + Vec3::new(
+                    libm::sinf(player.yaw) * libm::cosf(player.pitch) * look_dist,
+                    1.5 + libm::sinf(player.pitch) * look_dist, // Eye height + pitch
+                    libm::cosf(player.yaw) * libm::cosf(player.pitch) * look_dist,
+                );
                 (pos, target, Some(player.phase))
             } else {
                 let dist = 20.0;
@@ -1012,7 +1022,7 @@ fn render_game_frame(
 
         // Create culling context for frustum + distance culling
         let cull_ctx = CullContext::new(&view, projection, camera_pos)
-            .with_distances(0.5, 300.0);
+            .with_distances(0.5, 500.0);
 
         // Transform and batch terrain
         let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
@@ -1130,7 +1140,7 @@ fn render_game_frame(
 
         // 2. Create culling context for frustum + distance culling
         let cull_ctx = CullContext::new(&view, projection, camera_pos)
-            .with_distances(0.5, 300.0); // Near 0.5, Far 300 units
+            .with_distances(0.5, 500.0); // Near 0.5, Far 300 units
 
         // 3. Transform and bin terrain (always render, but reduced complexity)
         let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));

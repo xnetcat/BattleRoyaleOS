@@ -330,7 +330,8 @@ pub fn create_terrain_grid(size: f32, subdivisions: usize, base_color: Vec3) -> 
             let bl = tl + row_size as u32;
             let br = bl + 1;
 
-            // Two triangles per quad
+            // Two triangles per quad (CCW winding for upward-facing terrain)
+            // CCW from above means normal points up (+Y)
             mesh.indices.extend([tl, bl, tr]); // First triangle
             mesh.indices.extend([tr, bl, br]); // Second triangle
         }

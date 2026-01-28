@@ -173,22 +173,16 @@ impl CullContext {
     }
 
     /// Test if an object at position with bounding radius should be rendered
-    pub fn should_render(&self, position: Vec3, radius: f32) -> bool {
-        // Distance culling first (faster)
+    /// Uses simple distance culling - frustum culling disabled due to bugs
+    pub fn should_render(&self, position: Vec3, _radius: f32) -> bool {
+        // Simple horizontal distance culling (ignore Y for now)
         let dx = position.x - self.camera_pos.x;
-        let dy = position.y - self.camera_pos.y;
         let dz = position.z - self.camera_pos.z;
-        let dist_sq = dx * dx + dy * dy + dz * dz;
+        let dist_sq = dx * dx + dz * dz;
 
-        // Too close or too far
-        let near_sq = self.near_cull_distance * self.near_cull_distance;
+        // Only cull if too far (no near culling for gameplay)
         let far_sq = self.far_cull_distance * self.far_cull_distance;
-        if dist_sq < near_sq || dist_sq > far_sq {
-            return false;
-        }
-
-        // Frustum culling
-        self.frustum.intersects_sphere(position, radius)
+        dist_sq <= far_sq
     }
 
     /// Test if an AABB should be rendered
