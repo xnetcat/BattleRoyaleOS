@@ -9,6 +9,13 @@ A bare-metal Rust unikernel operating system designed to run a 100-player Battle
 - **Multicore support**: SMP with dedicated cores for game logic, rendering, and networking
 - **Network stack**: E1000 NIC driver with smoltcp TCP/IP stack
 - **Battle Royale mechanics**: 100 players, storm system, building, battle bus
+- **Complete weapon system**: Pickaxe, Pistol, Shotgun, Assault Rifle, SMG, Sniper with rarity tiers
+- **Building system**: Walls, floors, ramps, roofs with material costs
+- **Full HUD**: Health/shield bars, weapon hotbar, minimap, materials, kill feed
+- **Bot AI**: Computer-controlled opponents with movement, combat, and building
+- **VSync and frame timing**: 60 FPS target with proper frame pacing
+- **Voxel-based models**: Procedural character, weapon, and environment models
+- **VMSVGA GPU support**: Hardware-accelerated 2D rendering on QEMU/VirtualBox
 
 ## Technical Specifications
 
@@ -17,10 +24,14 @@ A bare-metal Rust unikernel operating system designed to run a 100-player Battle
 | Target | `x86_64-unknown-none` |
 | Bootloader | Limine v8.x |
 | Memory | 64MB heap (Talc allocator) |
+| Resolution | 1024x768x32 |
 | Graphics | Software rasterization, tile-based parallel rendering |
+| GPU Accel | VMSVGA 2D (QEMU `-vga vmware`, VirtualBox VMSVGA) |
 | Networking | E1000 NIC driver + smoltcp UDP |
 | Tick Rate | 20Hz server, 60Hz client render target |
+| VSync | VGA vertical retrace + TSC frame timing |
 | Max Players | 100 |
+| Bot AI | Pathfinding, combat, building |
 
 ## Project Structure
 
@@ -39,15 +50,16 @@ fortnite-os/
 │       ├── boot.rs               # Limine requests
 │       ├── memory/
 │       │   ├── allocator.rs      # Talc heap allocator
-│       │   └── dma.rs            # DMA memory for NIC
+│       │   ├── dma.rs            # DMA memory for NIC
+│       │   └── paging.rs         # MMIO page mapping
 │       ├── drivers/
 │       │   ├── serial.rs         # COM1 debug output
 │       │   ├── pci.rs            # PCI enumeration
-│       │   └── e1000/            # Intel E1000 NIC driver
+│       │   ├── e1000/            # Intel E1000 NIC driver
+│       │   └── vmsvga/           # VMware SVGA GPU driver
 │       │       ├── mod.rs        # Driver core
 │       │       ├── regs.rs       # Register definitions
-│       │       ├── descriptors.rs # TX/RX descriptors
-│       │       └── ring.rs       # Ring buffer management
+│       │       └── fifo.rs       # Command FIFO
 │       ├── net/
 │       │   ├── device.rs         # smoltcp Device trait
 │       │   ├── stack.rs          # Network interface wrapper
@@ -57,14 +69,29 @@ fortnite-os/
 │       │   ├── zbuffer.rs        # Depth buffer
 │       │   ├── rasterizer.rs     # Triangle rasterization
 │       │   ├── tiles.rs          # Tile-based rendering
-│       │   └── pipeline.rs       # Vertex transformation
+│       │   ├── pipeline.rs       # Vertex transformation
+│       │   ├── culling.rs        # Frustum and distance culling
+│       │   ├── vsync.rs          # VSync and frame timing
+│       │   ├── gpu.rs            # GPU backend abstraction
+│       │   └── gpu_batch.rs      # GPU batched rendering
 │       ├── game/
 │       │   ├── world.rs          # Game state management
 │       │   ├── player.rs         # Player entity
-│       │   ├── input.rs          # Keyboard input
+│       │   ├── input.rs          # Keyboard/mouse input (PS/2)
 │       │   ├── storm.rs          # Zone/storm system
 │       │   ├── bus.rs            # Battle bus
-│       │   └── building.rs       # Building system
+│       │   ├── building.rs       # Building system
+│       │   ├── weapon.rs         # Weapon types and stats
+│       │   ├── inventory.rs      # Player inventory
+│       │   ├── combat.rs         # Hitscan and damage
+│       │   ├── loot.rs           # Loot spawns and drops
+│       │   ├── bot.rs            # Bot AI system
+│       │   └── map.rs            # Map POIs and vegetation
+│       ├── ui/
+│       │   ├── main_menu.rs      # Title screen
+│       │   ├── fortnite_lobby.rs # Party lobby
+│       │   ├── game_ui.rs        # In-game HUD
+│       │   └── customization.rs  # Character customization
 │       └── smp/
 │           ├── scheduler.rs      # Core assignment
 │           └── sync.rs           # Spinlocks, barriers
@@ -73,7 +100,10 @@ fortnite-os/
 │       ├── lib.rs
 │       ├── vertex.rs             # Vertex format
 │       ├── math.rs               # Math utilities
-│       └── mesh.rs               # Procedural meshes
+│       ├── mesh.rs               # Procedural meshes
+│       ├── voxel.rs              # Voxel model system
+│       ├── voxel_models.rs       # Character, weapon, vehicle models
+│       └── map_mesh.rs           # Map structure meshes
 ├── protocol/                     # Network protocol crate
 │   └── src/
 │       ├── lib.rs
@@ -129,10 +159,23 @@ make run
 make run
 ```
 This boots the OS in QEMU with:
-- 5 CPU cores
+- 4 CPU cores (1 game logic + 3 rasterizers)
 - 512MB RAM
+- VMSVGA graphics (hardware 2D acceleration)
 - E1000 network card
 - Serial output to terminal
+
+### Manual QEMU Command
+```bash
+qemu-system-x86_64 \
+  -cdrom image.iso \
+  -m 512M \
+  -vga vmware \
+  -smp 4 \
+  -serial stdio \
+  -device e1000,netdev=net0 \
+  -netdev user,id=net0
+```
 
 ### Networked Instances (Multiplayer Testing)
 ```bash
@@ -149,14 +192,39 @@ make run-network-client
 
 ## Controls (In-Game)
 
-| Key | Action |
-|-----|--------|
-| W/A/S/D | Move |
-| Space | Jump / Exit Bus |
+### Movement
+| Input | Action |
+|-------|--------|
+| W/A/S/D | Move forward/left/backward/right |
+| Mouse | Look around (FPS-style camera) |
+| Space | Jump / Exit Battle Bus / Deploy Glider |
 | Ctrl | Crouch |
-| B | Build Wall |
-| Shift | Fire |
-| Escape | Quit |
+
+### Combat
+| Input | Action |
+|-------|--------|
+| Left Click / Shift | Fire weapon |
+| R | Reload |
+| 1 | Select Pickaxe |
+| 2-6 | Select weapon slot 1-5 |
+
+### Building
+| Input | Action |
+|-------|--------|
+| B / Right Click | Build wall |
+
+### Interaction
+| Input | Action |
+|-------|--------|
+| E | Pick up loot |
+| Tab | Toggle minimap (in menus) |
+| Escape | Return to menu / Quit |
+
+### Gliding
+| Input | Action |
+|-------|--------|
+| W (hold) | Dive faster (more speed, faster descent) |
+| Normal | Glide (slower descent, less speed) |
 
 ## Architecture
 
@@ -164,17 +232,52 @@ make run-network-client
 
 | Core | Role | Description |
 |------|------|-------------|
-| 0 | Game Logic | Main loop, input, frame orchestration |
+| 0 | Game Logic | Main loop, input, physics, bot AI |
 | 1-3 | Rasterizers | Tile-based parallel rendering |
-| 4 | Network | E1000 polling, packet processing |
+
+Network polling is integrated into the main loop on core 0.
 
 ### Rendering Pipeline
 
-1. **Vertex Transformation**: Model → World → View → Clip → NDC → Screen
-2. **Backface Culling**: Reject triangles facing away from camera
-3. **Triangle Binning**: Assign triangles to 64x64 pixel tiles
-4. **Rasterization**: Scanline algorithm with z-buffer testing
-5. **Shading**: Gouraud shading with per-vertex colors
+1. **Distance Culling**: Skip objects beyond 500 units from camera
+2. **Vertex Transformation**: Model → World → View → Clip → NDC → Screen
+3. **Backface Culling**: Reject triangles facing away from camera (CCW winding)
+4. **Triangle Binning**: Assign triangles to 64x64 pixel tiles
+5. **Parallel Rasterization**: 3 cores process tiles concurrently
+6. **Z-Buffer Testing**: Per-pixel depth comparison
+7. **Shading**: Gouraud shading with per-vertex colors and directional light
+
+### Game Mechanics
+
+**Battle Bus**: Players start on a bus flying across the map. Press Space to drop.
+
+**Skydiving**:
+- Normal fall: 70 units/sec
+- Dive (hold W): 120 units/sec
+- Glider auto-deploys at 50m altitude
+
+**Gliding**:
+- Normal glide: 25 units/sec descent, 20 units/sec horizontal
+- Dive (hold W): 45 units/sec descent, 35 units/sec horizontal
+
+**Storm**: Circular safe zone that shrinks over time. Damages players outside (1 HP/sec initially, scaling up).
+
+**Building**: Costs 10 wood per wall. Walls have 150 HP.
+
+**Combat**: Hitscan weapons with headshot multipliers (1.5x-2.5x depending on weapon).
+
+### Weapon System
+
+| Weapon | Damage | Fire Rate | Magazine | Range |
+|--------|--------|-----------|----------|-------|
+| Pickaxe | 20 | 1.0/s | ∞ | 2m |
+| Pistol | 23 | 6.75/s | 16 | 50m |
+| Shotgun | 90 | 0.7/s | 5 | 15m |
+| Assault Rifle | 30 | 5.5/s | 30 | 100m |
+| SMG | 17 | 12.0/s | 30 | 40m |
+| Sniper | 100 | 0.33/s | 1 | 500m |
+
+**Rarity tiers**: Common (1.0x) → Uncommon (1.05x) → Rare (1.10x) → Epic (1.15x) → Legendary (1.21x) damage multiplier
 
 ### Network Protocol
 
@@ -210,12 +313,17 @@ struct PlayerState {
 
 | Component | Budget | Notes |
 |-----------|--------|-------|
-| Triangle binning | 2ms | Single-threaded |
-| Rasterization | 20ms | 3 cores parallel |
-| Buffer swap | 2ms | Direct framebuffer |
-| Game logic | 5ms | Physics, input |
-| Network | 4ms | Dedicated core |
-| **Total** | 33ms | ~30 FPS target |
+| Triangle binning | 2ms | Single-threaded with culling |
+| Rasterization | 10ms | 3 cores parallel |
+| Buffer swap | 2ms | VMSVGA or direct framebuffer |
+| Game logic | 3ms | Physics, input, bot AI |
+| Network | 2ms | Dedicated core |
+| **Total** | 16ms | 60 FPS target with VSync |
+
+### Actual Performance
+- **Menu screens**: 60 FPS (VSync limited)
+- **In-game (3200 terrain triangles + entities)**: 25-60 FPS depending on scene complexity
+- **Distance culling**: 500 unit radius to reduce draw calls
 
 ### Bandwidth (100 players)
 - Per client: 100 × 24 bytes × 20Hz = ~48 KB/s
