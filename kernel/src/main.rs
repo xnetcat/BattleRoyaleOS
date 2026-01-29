@@ -221,22 +221,33 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // TSC frequency for benchmark reporting (assume ~2GHz for QEMU)
     let tsc_per_second: u64 = 2_000_000_000;
 
-    // Create reusable meshes for game entities
-    // Terrain must match MAP_SIZE (2000.0) so players can see/land on it from bus
-    // Terrain: 40 subdivisions = 3,200 triangles (reduced from 100 = 20,000 for performance)
-    let terrain = mesh::create_terrain_grid(2000.0, 40, Vec3::new(0.2, 0.6, 0.3));
-    let player_mesh = mesh::create_player_mesh(Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.9, 0.7, 0.6));
-    let wall_mesh = mesh::create_wall_mesh(Vec3::new(0.6, 0.5, 0.4));
-    let bus_mesh = mesh::create_battle_bus_mesh();
+    // Create reusable meshes for game entities using VOXEL MODELS
+    // Terrain: 3D heightmap with proper hills
+    let terrain = create_3d_terrain(2000.0, 50); // 50 subdivisions for good balance
+
+    // Player mesh from detailed voxel model (use default customization for now)
+    let default_custom = renderer::voxel::CharacterCustomization::default();
+    let player_mesh = renderer::voxel_models::create_player_model(&default_custom).to_mesh(0.15);
+
+    // Building pieces from voxel models
+    let wall_mesh = renderer::voxel_models::create_wall_wood().to_mesh(0.25);
+
+    // Battle bus from detailed voxel model (includes balloon)
+    let bus_mesh = renderer::voxel_models::create_battle_bus().to_mesh(0.15);
 
     // Additional meshes for complete game rendering
     let glider_mesh = renderer::voxel_models::create_glider_model(0).to_mesh(0.15);
-    let tree_pine_mesh = renderer::voxel_models::create_pine_tree().to_mesh(0.3);
-    let tree_oak_mesh = renderer::voxel_models::create_oak_tree().to_mesh(0.3);
-    let rock_mesh = renderer::voxel_models::create_rock(0).to_mesh(0.25);
-    let chest_mesh = renderer::voxel_models::create_chest().to_mesh(0.12);
+    let tree_pine_mesh = renderer::voxel_models::create_pine_tree().to_mesh(0.5);
+    let tree_oak_mesh = renderer::voxel_models::create_oak_tree().to_mesh(0.5);
+    let rock_mesh = renderer::voxel_models::create_rock(0).to_mesh(0.4);
+    let chest_mesh = renderer::voxel_models::create_chest().to_mesh(0.15);
     let house_mesh = renderer::map_mesh::create_house_mesh_simple(Vec3::new(0.7, 0.6, 0.5));
     let storm_wall_mesh = mesh::create_storm_wall(48, 200.0); // 48 segments, 200 units tall
+
+    // Weapon meshes from detailed voxel models
+    let shotgun_mesh = renderer::voxel_models::create_shotgun_model().to_mesh(0.08);
+    let ar_mesh = renderer::voxel_models::create_ar_model().to_mesh(0.08);
+    let sniper_mesh = renderer::voxel_models::create_sniper_model().to_mesh(0.08);
 
     serial_println!("Meshes: terrain={} player={} wall={} bus={} glider={} tree={} chest={}",
         terrain.triangle_count(), player_mesh.triangle_count(),
@@ -816,7 +827,7 @@ fn render_test_map_frame(
     }
 }
 
-/// Render the lobby frame with 3D player preview
+/// Render the lobby frame with 3D player preview (supports up to 4 team members)
 fn render_lobby_frame(
     fb_width: usize,
     fb_height: usize,
@@ -838,7 +849,7 @@ fn render_lobby_frame(
     // Clear z-buffer for 3D rendering
     render_ctx.clear_zbuffer();
 
-    // Get current player customization
+    // Get current player customization for the local player
     let custom = PLAYER_CUSTOMIZATION.lock();
     let renderer_custom = custom.to_renderer();
     drop(custom);
@@ -846,13 +857,22 @@ fn render_lobby_frame(
     // Create player mesh from voxel model
     let player_mesh = voxel_models::create_player_model(&renderer_custom).to_mesh(0.15);
 
-    // Create a simple platform mesh (flat quad)
-    let platform_mesh = mesh::create_terrain_grid(3.0, 2, Vec3::new(0.2, 0.3, 0.5));
+    // Calculate layout based on number of players
+    let player_count = lobby.player_count();
+    let spacing = 2.0; // Distance between players
+    let total_width = (player_count as f32 - 1.0) * spacing;
+    let start_x = -total_width / 2.0;
 
-    // Camera setup - orbit around the player
+    // Adjust camera distance based on player count
+    let camera_dist = 6.0 + (player_count as f32 - 1.0) * 1.5;
+    let camera_height = 2.0 + (player_count as f32 - 1.0) * 0.3;
+
+    // Create a simple platform mesh (size based on player count)
+    let platform_width = 3.0 + (player_count as f32 - 1.0) * spacing;
+    let platform_mesh = mesh::create_terrain_grid(platform_width, 2, Vec3::new(0.2, 0.3, 0.5));
+
+    // Camera setup - fixed angle view (no orbit since rotation is fixed)
     let rotation = lobby.get_rotation();
-    let camera_dist = 6.0;
-    let camera_height = 2.0;
     let camera_pos = Vec3::new(
         libm::sinf(rotation) * camera_dist,
         camera_height,
@@ -865,13 +885,16 @@ fn render_lobby_frame(
     tiles::clear_lockfree_bins();
     tiles::reset_triangle_buffer();
 
-    // Transform and bin the platform
+    // Transform and bin the platform (centered)
     let platform_model = Mat4::from_translation(Vec3::new(0.0, -0.1, 0.0));
     bin_mesh(&platform_mesh, &platform_model, &view, projection, fb_width as f32, fb_height as f32);
 
-    // Transform and bin the player model (standing on platform)
-    let player_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
-    bin_mesh(&player_mesh, &player_model, &view, projection, fb_width as f32, fb_height as f32);
+    // Transform and bin each player model in the party
+    for i in 0..player_count {
+        let player_x = start_x + i as f32 * spacing;
+        let player_model = Mat4::from_translation(Vec3::new(player_x, 0.0, 0.0));
+        bin_mesh(&player_mesh, &player_model, &view, projection, fb_width as f32, fb_height as f32);
+    }
 
     // Reset and render tiles
     tiles::reset();
@@ -1267,6 +1290,14 @@ fn render_game_frame(
 
     // Draw FPS counter
     font::draw_fps(current_fps, fb_width);
+
+    // Draw crosshair at center of screen
+    {
+        let fb_guard = graphics::framebuffer::FRAMEBUFFER.lock();
+        if let Some(fb) = fb_guard.as_ref() {
+            graphics::ui::panel::draw_crosshair_raw(fb, fb_width, fb_height, 0xFFFFFFFF);
+        }
+    }
 
     // Draw storm indicator if player is in storm
     {
@@ -1747,6 +1778,109 @@ pub fn network_worker() {
 
     // Process incoming packets
     net::protocol::process_incoming();
+}
+
+/// Create a 3D terrain mesh with proper hills and valleys
+/// Uses Perlin-like noise for natural-looking terrain
+fn create_3d_terrain(size: f32, subdivisions: usize) -> mesh::Mesh {
+    use renderer::vertex::Vertex;
+    use glam::Vec2;
+
+    let mut terrain_mesh = mesh::Mesh::new();
+
+    let half = size / 2.0;
+    let step = size / subdivisions as f32;
+
+    // Create vertices with height variation
+    for z in 0..=subdivisions {
+        for x in 0..=subdivisions {
+            let fx = x as f32 * step - half;
+            let fz = z as f32 * step - half;
+
+            // Multi-octave noise for more natural terrain
+            // Large hills
+            let h1 = libm::sinf(fx * 0.01) * libm::cosf(fz * 0.01) * 15.0;
+            // Medium bumps
+            let h2 = libm::sinf(fx * 0.05) * libm::sinf(fz * 0.05) * 5.0;
+            // Small details
+            let h3 = libm::sinf(fx * 0.15 + fz * 0.1) * 2.0;
+            // Add some valleys
+            let h4 = libm::cosf((fx + fz) * 0.02) * 8.0;
+
+            let height = h1 + h2 + h3 + h4;
+
+            // Color variation based on height (grass -> dirt -> rock)
+            let color = if height > 10.0 {
+                // Rocky peaks - gray
+                Vec3::new(0.5, 0.5, 0.45)
+            } else if height > 5.0 {
+                // High grass - darker green
+                Vec3::new(0.2, 0.5, 0.2)
+            } else if height > -5.0 {
+                // Normal grass - bright green
+                Vec3::new(0.3, 0.65, 0.25)
+            } else {
+                // Low areas - brownish
+                Vec3::new(0.4, 0.35, 0.2)
+            };
+
+            terrain_mesh.vertices.push(Vertex::new(
+                Vec3::new(fx, height, fz),
+                Vec3::Y, // Will be recalculated
+                color,
+                Vec2::new(x as f32 / subdivisions as f32, z as f32 / subdivisions as f32),
+            ));
+        }
+    }
+
+    // Create indices for triangles
+    let row_size = subdivisions + 1;
+    for z in 0..subdivisions {
+        for x in 0..subdivisions {
+            let tl = (z * row_size + x) as u32;
+            let tr = tl + 1;
+            let bl = tl + row_size as u32;
+            let br = bl + 1;
+
+            // Two triangles per quad
+            terrain_mesh.indices.extend([tl, bl, tr]);
+            terrain_mesh.indices.extend([tr, bl, br]);
+        }
+    }
+
+    // Recalculate normals for proper lighting
+    let mut normals = alloc::vec![Vec3::ZERO; terrain_mesh.vertices.len()];
+
+    for i in (0..terrain_mesh.indices.len()).step_by(3) {
+        let i0 = terrain_mesh.indices[i] as usize;
+        let i1 = terrain_mesh.indices[i + 1] as usize;
+        let i2 = terrain_mesh.indices[i + 2] as usize;
+
+        let v0 = terrain_mesh.vertices[i0].position;
+        let v1 = terrain_mesh.vertices[i1].position;
+        let v2 = terrain_mesh.vertices[i2].position;
+
+        let edge1 = v1 - v0;
+        let edge2 = v2 - v0;
+        let face_normal = edge1.cross(edge2);
+
+        normals[i0] += face_normal;
+        normals[i1] += face_normal;
+        normals[i2] += face_normal;
+    }
+
+    // Normalize and apply
+    for (i, normal) in normals.iter().enumerate() {
+        let length = libm::sqrtf(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+        let n = if length > 0.0001 {
+            Vec3::new(normal.x / length, normal.y / length, normal.z / length)
+        } else {
+            Vec3::Y
+        };
+        terrain_mesh.vertices[i].normal = n;
+    }
+
+    terrain_mesh
 }
 
 /// Panic handler

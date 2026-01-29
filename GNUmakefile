@@ -34,7 +34,8 @@ $(ISO): $(KERNEL) $(LIMINE_DIR) limine.conf
 		iso_root -o $(ISO)
 	$(LIMINE_DIR)/limine bios-install $(ISO)
 
-run: $(ISO)
+# Single instance (for standalone testing)
+run-single: $(ISO)
 	qemu-system-x86_64 \
 		-M q35 \
 		-m 512M \
@@ -48,6 +49,68 @@ run: $(ISO)
 		$(QEMU_MOUSE) \
 		-no-reboot \
 		-d int,cpu_reset -D qemu.log
+
+# Combined server + client launch (default run target)
+# Server runs headless (logs only), client has GUI
+run: $(ISO)
+	@echo "Starting BattleRoyaleOS Server (headless)..."
+	@qemu-system-x86_64 \
+		-M q35 \
+		-m 512M \
+		-smp 5 \
+		-nographic \
+		-cdrom $(ISO) \
+		-device e1000,netdev=net0,mac=52:54:00:12:34:56 \
+		-netdev socket,id=net0,listen=:1234 \
+		-no-reboot &
+	@sleep 2
+	@echo "Starting BattleRoyaleOS Client (GUI)..."
+	@qemu-system-x86_64 \
+		-M q35 \
+		-m 512M \
+		-smp 5 \
+		-vga vmware \
+		-cdrom $(ISO) \
+		-serial null \
+		-device e1000,netdev=net0,mac=52:54:00:12:34:57 \
+		-netdev socket,id=net0,connect=127.0.0.1:1234 \
+		$(QEMU_AUDIO) \
+		$(QEMU_MOUSE) \
+		-no-reboot
+
+# Run server only (headless, logs to terminal)
+run-server: $(ISO)
+	@echo "Starting BattleRoyaleOS Server (headless)..."
+	qemu-system-x86_64 \
+		-M q35 \
+		-m 512M \
+		-smp 5 \
+		-nographic \
+		-cdrom $(ISO) \
+		-device e1000,netdev=net0,mac=52:54:00:12:34:56 \
+		-netdev socket,id=net0,listen=:1234 \
+		-no-reboot
+
+# Run client only (GUI, connects to server)
+run-client: $(ISO)
+	@echo "Starting BattleRoyaleOS Client (GUI)..."
+	qemu-system-x86_64 \
+		-M q35 \
+		-m 512M \
+		-smp 5 \
+		-vga vmware \
+		-cdrom $(ISO) \
+		-serial stdio \
+		-device e1000,netdev=net0,mac=52:54:00:12:34:57 \
+		-netdev socket,id=net0,connect=127.0.0.1:1234 \
+		$(QEMU_AUDIO) \
+		$(QEMU_MOUSE) \
+		-no-reboot
+
+# Stop all running instances
+stop:
+	@pkill -f "qemu-system-x86_64.*$(ISO)" || true
+	@echo "Stopped all BattleRoyaleOS instances"
 
 run-software: $(ISO)
 	qemu-system-x86_64 \

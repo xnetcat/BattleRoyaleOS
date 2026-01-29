@@ -134,6 +134,7 @@ impl ServerSelectScreen {
                 }
             }
             MenuAction::Back => {
+                // Return to party lobby
                 return Some(GameState::PartyLobby);
             }
             _ => {}

@@ -19,8 +19,8 @@ use crate::graphics::ui::panel::{draw_panel_raw, fill_rect_raw};
 pub enum LobbyTab {
     Play,
     Locker,
-    ItemShop,
-    Career,
+    Network,
+    Settings,
 }
 
 impl LobbyTab {
@@ -30,8 +30,8 @@ impl LobbyTab {
         match index % Self::COUNT {
             0 => Self::Play,
             1 => Self::Locker,
-            2 => Self::ItemShop,
-            _ => Self::Career,
+            2 => Self::Network,
+            _ => Self::Settings,
         }
     }
 
@@ -39,8 +39,8 @@ impl LobbyTab {
         match self {
             Self::Play => "PLAY",
             Self::Locker => "LOCKER",
-            Self::ItemShop => "ITEM SHOP",
-            Self::Career => "CAREER",
+            Self::Network => "NETWORK",
+            Self::Settings => "SETTINGS",
         }
     }
 }
@@ -128,12 +128,11 @@ impl FortniteLobby {
         self.player_rotation
     }
 
-    /// Update rotation each frame
+    /// Update each frame - player preview is static (no rotation animation)
     pub fn tick(&mut self) {
-        self.player_rotation += 0.01;
-        if self.player_rotation > core::f32::consts::TAU {
-            self.player_rotation -= core::f32::consts::TAU;
-        }
+        // Player preview is static - fixed angle for best viewing (approximately 45 degrees)
+        // This gives a 3/4 view showing both front and side of the character
+        self.player_rotation = 0.7854; // PI/4 radians
     }
 
     /// Handle input and return new state if transitioning
@@ -197,14 +196,17 @@ impl FortniteLobby {
                     LobbyTab::Locker => {
                         return Some(GameState::Customization);
                     }
-                    _ => {
-                        // Other tabs not implemented yet
+                    LobbyTab::Network => {
+                        // Go to server/client selection screen (IP entry)
+                        return Some(GameState::ServerSelect);
+                    }
+                    LobbyTab::Settings => {
+                        return Some(GameState::Settings);
                     }
                 }
             }
             MenuAction::Back => {
-                // Back from party lobby goes to settings (no main menu anymore)
-                return Some(GameState::Settings);
+                // Back from party lobby - no action (this is the main screen)
             }
             _ => {}
         }
@@ -218,6 +220,39 @@ impl FortniteLobby {
             return Some(GameState::TestMap);
         }
         None
+    }
+
+    /// Add a party member to the lobby
+    /// Returns the player ID if successful, None if party is full
+    pub fn add_party_member(&mut self, name: &str) -> Option<u8> {
+        let max_party = match GameMode::from_index(self.selected_mode) {
+            GameMode::Solo => 1,
+            GameMode::Duos => 2,
+            GameMode::Squads => 4,
+        };
+
+        if self.players.len() >= max_party {
+            return None;
+        }
+
+        let id = self.players.len() as u8;
+        let player = LobbyPlayer::new(id, name);
+        self.players.push(player);
+        Some(id)
+    }
+
+    /// Get the number of players in the party
+    pub fn player_count(&self) -> usize {
+        self.players.len()
+    }
+
+    /// Get the maximum party size for current game mode
+    pub fn max_party_size(&self) -> usize {
+        match GameMode::from_index(self.selected_mode) {
+            GameMode::Solo => 1,
+            GameMode::Duos => 2,
+            GameMode::Squads => 4,
+        }
     }
 
     /// Check if all players are ready

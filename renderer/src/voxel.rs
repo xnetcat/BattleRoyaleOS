@@ -109,6 +109,29 @@ pub mod palette {
     pub const BACKPACK_TAN: VoxelColor = VoxelColor::from_hex(0xD2B48C);
     pub const GLIDER_RED: VoxelColor = VoxelColor::from_hex(0xE53935);
     pub const GLIDER_BLUE: VoxelColor = VoxelColor::from_hex(0x1E88E5);
+
+    // Chrome/metallic
+    pub const CHROME: VoxelColor = VoxelColor::from_hex(0xCCCCCC);
+    pub const CHROME_DARK: VoxelColor = VoxelColor::from_hex(0x999999);
+
+    // Lights
+    pub const HEADLIGHT: VoxelColor = VoxelColor::from_hex(0xFFFF99);
+    pub const TAILLIGHT: VoxelColor = VoxelColor::from_hex(0xFF3333);
+
+    // Fabric/materials
+    pub const CANVAS_TAN: VoxelColor = VoxelColor::from_hex(0xD4C4A8);
+    pub const ROPE_BROWN: VoxelColor = VoxelColor::from_hex(0x8B7355);
+    pub const RUBBER: VoxelColor = VoxelColor::from_hex(0x1A1A1A);
+    pub const GLASS: VoxelColor = VoxelColor::from_hex(0xAADDFF);
+
+    // Bus colors
+    pub const BUS_BLUE: VoxelColor = VoxelColor::from_hex(0x2266AA);
+    pub const BUS_LIGHT_BLUE: VoxelColor = VoxelColor::from_hex(0x3388CC);
+    pub const BUS_YELLOW: VoxelColor = VoxelColor::from_hex(0xFFCC00);
+
+    // Balloon colors
+    pub const BALLOON_RED: VoxelColor = VoxelColor::from_hex(0xCC3333);
+    pub const BALLOON_WHITE: VoxelColor = VoxelColor::from_hex(0xEEEEEE);
 }
 
 /// A single voxel (empty or filled with color)

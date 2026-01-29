@@ -173,19 +173,24 @@ impl CullContext {
     }
 
     /// Test if an object at position with bounding radius should be rendered
-    /// Uses simple distance culling - frustum culling disabled due to bugs
-    pub fn should_render(&self, position: Vec3, _radius: f32) -> bool {
-        // Simple horizontal distance culling (ignore Y for now)
+    /// Frustum culling DISABLED - was causing objects to disappear incorrectly
+    /// Only uses simple distance culling for performance
+    pub fn should_render(&self, position: Vec3, radius: f32) -> bool {
+        // Simple 3D distance culling only (frustum culling disabled)
         let dx = position.x - self.camera_pos.x;
+        let dy = position.y - self.camera_pos.y;
         let dz = position.z - self.camera_pos.z;
-        let dist_sq = dx * dx + dz * dz;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
 
-        // Only cull if too far (no near culling for gameplay)
-        let far_sq = self.far_cull_distance * self.far_cull_distance;
+        // Far distance culling with generous tolerance
+        let effective_far = self.far_cull_distance + radius + 100.0;
+        let far_sq = effective_far * effective_far;
+
         dist_sq <= far_sq
     }
 
     /// Test if an AABB should be rendered
+    /// Frustum culling DISABLED - was causing objects to disappear incorrectly
     pub fn should_render_aabb(&self, aabb: &AABB) -> bool {
         // Distance culling using AABB center
         let center = aabb.center();
@@ -196,13 +201,11 @@ impl CullContext {
         let dz = center.z - self.camera_pos.z;
         let dist_sq = dx * dx + dy * dy + dz * dz;
 
-        let far_sq = self.far_cull_distance * self.far_cull_distance;
-        if dist_sq > far_sq {
-            return false;
-        }
+        // Generous far distance
+        let effective_far = self.far_cull_distance + radius + 100.0;
+        let far_sq = effective_far * effective_far;
 
-        // Frustum culling
-        self.frustum.intersects_aabb(aabb)
+        dist_sq <= far_sq
     }
 }
 
