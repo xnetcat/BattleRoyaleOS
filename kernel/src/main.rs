@@ -13,6 +13,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// Global benchmark mode flag - set by kernel_main, read by main_loop
 static BENCHMARK_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Global server mode flag - disables all rendering when true
+static SERVER_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Global test mode flag - spawns all items for testing
+static TEST_MODE: AtomicBool = AtomicBool::new(false);
+
 /// Global GPU batch enabled flag - checked once at init, used per-frame without locks
 static GPU_BATCH_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
@@ -87,34 +93,66 @@ extern "C" fn _start() -> ! {
         memory::dma::init_dma_pool(entries, hhdm_offset);
     }
 
-    // Initialize GPU (tries VMSVGA first, falls back to software framebuffer)
-    let (fb_width, fb_height) = graphics::gpu::init();
-    serial_println!("GPU: {} {}x{}", graphics::gpu::backend_name(), fb_width, fb_height);
-    if fb_width == 0 || fb_height == 0 {
-        serial_println!("ERROR: No framebuffer available");
-        halt_loop();
+    // Check kernel arguments for boot mode FIRST (before GPU init)
+    // This way we can skip GPU initialization in server mode
+    let mut is_server = false;
+    let mut benchmark_mode = false;
+    let mut test_mode = false;
+    if let Some(file) = KERNEL_FILE_REQUEST.get_response() {
+        let cmdline_bytes = file.file().cmdline();
+        if let Ok(cmdline) = core::str::from_utf8(cmdline_bytes) {
+            serial_println!("Kernel cmdline: {:?}", cmdline);
+            if cmdline.contains("server") {
+                is_server = true;
+                serial_println!("SERVER MODE: Dedicated server (no rendering)");
+            }
+            if cmdline.contains("benchmark") {
+                benchmark_mode = true;
+                serial_println!("BENCHMARK MODE: Performance testing");
+            }
+            if cmdline.contains("test") {
+                test_mode = true;
+                serial_println!("TEST MODE: All items spawned");
+            }
+        }
     }
 
-    // Initialize GPU rendering integration
-    graphics::gpu_render::init();
+    // Initialize GPU (skip in server mode - dedicated server has no display)
+    let (fb_width, fb_height) = if is_server {
+        serial_println!("SERVER MODE: Skipping GPU initialization");
+        (0, 0)
+    } else {
+        // Normal GPU initialization (tries VMSVGA first, falls back to software framebuffer)
+        let (w, h) = graphics::gpu::init();
+        serial_println!("GPU: {} {}x{}", graphics::gpu::backend_name(), w, h);
+        if w == 0 || h == 0 {
+            serial_println!("ERROR: No framebuffer available");
+            halt_loop();
+        }
 
-    // Initialize GPU batch renderer - sets GPU_BATCH_AVAILABLE flag
-    let gpu_batch_ok = graphics::gpu_batch::init(fb_width as u32, fb_height as u32);
-    GPU_BATCH_AVAILABLE.store(gpu_batch_ok, Ordering::Release);
+        // Initialize GPU rendering integration
+        graphics::gpu_render::init();
 
-    // Initialize z-buffer
-    zbuffer::init(fb_width, fb_height);
-    serial_println!("Z-buffer initialized");
+        // Initialize GPU batch renderer - sets GPU_BATCH_AVAILABLE flag
+        let gpu_batch_ok = graphics::gpu_batch::init(w as u32, h as u32);
+        GPU_BATCH_AVAILABLE.store(gpu_batch_ok, Ordering::Release);
 
-    // Initialize tile system
-    tiles::init(fb_width, fb_height);
-    if let Some(queue) = tiles::TILE_QUEUE.lock().as_ref() {
-        serial_println!("Tile system: {} tiles", queue.tile_count());
-        tiles::init_bins(queue.tile_count());
-    }
+        // Initialize z-buffer
+        zbuffer::init(w, h);
+        serial_println!("Z-buffer initialized");
 
-    // Initialize vsync subsystem
-    graphics::vsync::init();
+        // Initialize tile system
+        tiles::init(w, h);
+        if let Some(queue) = tiles::TILE_QUEUE.lock().as_ref() {
+            serial_println!("Tile system: {} tiles", queue.tile_count());
+            tiles::init_bins(queue.tile_count());
+        }
+
+        // Initialize vsync subsystem
+        graphics::vsync::init();
+
+        (w, h)
+    };
 
     // Print CPU count
     let cpu_count = smp::scheduler::cpu_count();
@@ -163,35 +201,15 @@ extern "C" fn _start() -> ! {
         serial_println!("E1000 not found");
     }
 
-    // Initialize game world
+    // Initialize game world (uses is_server flag from earlier cmdline parsing)
     serial_println!("Initializing game world...");
-    // Check kernel arguments for server/client/benchmark mode
-    let mut is_server = false;
-    let mut benchmark_mode = false;
-    if let Some(file) = KERNEL_FILE_REQUEST.get_response() {
-        // Check kernel file path (for legacy)
-        let path_cstr: &CStr = file.file().string();
-        if let Ok(path_str) = path_cstr.to_str() {
-            serial_println!("Kernel path: {:?}", path_str);
-        }
-        // Check cmdline for options
-        let cmdline_bytes = file.file().cmdline();
-        if let Ok(cmdline) = core::str::from_utf8(cmdline_bytes) {
-            serial_println!("Kernel cmdline: {:?}", cmdline);
-            if cmdline.contains("server") {
-                is_server = true;
-            }
-            if cmdline.contains("benchmark") || cmdline.contains("test") {
-                benchmark_mode = true;
-                serial_println!("BENCHMARK MODE: Auto-starting game");
-            }
-        }
-    }
     game::world::init(is_server);
     serial_println!("Game world initialized (Server: {})", is_server);
 
-    // Store benchmark mode for main loop (global static)
+    // Store mode flags for main loop (global statics)
     BENCHMARK_MODE.store(benchmark_mode, core::sync::atomic::Ordering::SeqCst);
+    SERVER_MODE.store(is_server, core::sync::atomic::Ordering::SeqCst);
+    TEST_MODE.store(test_mode, core::sync::atomic::Ordering::SeqCst);
 
     // Initialize SMP - start worker cores
     serial_println!("Initializing SMP...");
@@ -205,8 +223,82 @@ extern "C" fn _start() -> ! {
 
     serial_println!("Starting main loop...");
 
-    // Main game loop
-    main_loop(fb_width, fb_height);
+    // Branch based on server mode
+    if is_server {
+        // Dedicated server loop (no rendering)
+        server_loop();
+    } else {
+        // Main game loop with rendering
+        main_loop(fb_width, fb_height);
+    }
+}
+
+/// Dedicated server loop (no rendering)
+/// Processes network traffic, updates game state, broadcasts to clients
+fn server_loop() -> ! {
+    serial_println!("=== DEDICATED SERVER STARTED ===");
+    serial_println!("Server is running headless (no rendering)");
+    serial_println!("Waiting for client connections...");
+
+    let mut tick_count = 0u64;
+    let tsc_per_second: u64 = 2_000_000_000;
+    let start_tsc = read_tsc();
+    let mut last_status_tsc = start_tsc;
+
+    // Server tick rate: 60 ticks per second (same as client frame rate)
+    let tsc_per_tick = tsc_per_second / 60;
+    let mut next_tick_tsc = start_tsc + tsc_per_tick;
+
+    // Initialize the game world in server mode
+    if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+        world.spawn_bots(10); // Spawn 10 bots for the battle
+        serial_println!("Spawned 10 bots for battle");
+    }
+
+    loop {
+        let current_tsc = read_tsc();
+
+        // Tick at fixed rate
+        if current_tsc >= next_tick_tsc {
+            tick_count += 1;
+            next_tick_tsc = current_tsc + tsc_per_tick;
+
+            // Process incoming network packets
+            net::protocol::process_incoming();
+
+            // Update game world physics
+            if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
+                world.update(1.0 / 60.0);
+            }
+
+            // Broadcast world state to clients every 6 ticks (~10 Hz)
+            if tick_count % 6 == 0 {
+                net::protocol::broadcast_world_state();
+            }
+
+            // Poll network stack
+            net::stack::poll(tick_count as i64);
+
+            // Print status every 10 seconds
+            if current_tsc - last_status_tsc >= tsc_per_second * 10 {
+                last_status_tsc = current_tsc;
+                let elapsed_secs = (current_tsc - start_tsc) / tsc_per_second;
+
+                // Get player count
+                let player_count = if let Some(world) = game::world::GAME_WORLD.lock().as_ref() {
+                    world.players.len()
+                } else {
+                    0
+                };
+
+                serial_println!("[SERVER] Uptime: {}s | Ticks: {} | Players: {}",
+                    elapsed_secs, tick_count, player_count);
+            }
+        } else {
+            // Idle CPU while waiting for next tick (saves power)
+            unsafe { core::arch::asm!("hlt"); }
+        }
+    }
 }
 
 /// Main game loop (runs on Core 0)
@@ -287,33 +379,148 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // Countdown timer
     let mut countdown_timer = 0.0f32;
 
-    // Check for benchmark mode - auto-start game
+    // Check for benchmark/test mode - auto-start game
     let benchmark = BENCHMARK_MODE.load(core::sync::atomic::Ordering::SeqCst);
-    let mut benchmark_started = false;
+    let test_mode = TEST_MODE.load(core::sync::atomic::Ordering::SeqCst);
+    let auto_start = benchmark || test_mode;
+    let mut auto_started = false;
     let mut benchmark_frames = 0u32;
     let mut benchmark_start_time = 0u64;
 
     loop {
-        // Benchmark mode: auto-start game after a few frames
-        if benchmark && !benchmark_started && frame_count > 10 {
-            benchmark_started = true;
+        // Auto-start mode (benchmark or test): start game after a few frames
+        if auto_start && !auto_started && frame_count > 10 {
+            auto_started = true;
             benchmark_start_time = read_tsc();
-            serial_println!("BENCHMARK: Starting InGame test...");
+
+            if test_mode {
+                serial_println!("TEST MODE: Starting with all items spawned...");
+            } else {
+                serial_println!("BENCHMARK: Starting InGame test...");
+            }
 
             // Create a local player and put them in the game
             if let Some(world) = game::world::GAME_WORLD.lock().as_mut() {
                 // Add a player if none exists
                 if world.players.is_empty() {
                     use smoltcp::wire::Ipv4Address;
-                    let player = game::player::Player::new(0, "Benchmark", Ipv4Address::new(127, 0, 0, 1), 5000);
+                    let player_name = if test_mode { "TestPlayer" } else { "Benchmark" };
+                    let player = game::player::Player::new(0, player_name, Ipv4Address::new(127, 0, 0, 1), 5000);
                     world.players.push(player);
                     world.local_player_id = Some(0);
                     local_player_id = Some(0);
                 }
+
                 // Set player to grounded (not on bus)
                 if let Some(p) = world.players.get_mut(0) {
                     p.phase = game::state::PlayerPhase::Grounded;
-                    p.position = Vec3::new(100.0, 5.0, 100.0);
+                    p.position = Vec3::new(50.0, 5.0, 50.0);
+
+                    // Test mode: give player all weapons
+                    if test_mode {
+                        use game::weapon::{WeaponType, Weapon, Rarity};
+                        p.inventory.add_weapon(Weapon::new(WeaponType::AssaultRifle, Rarity::Legendary));
+                        p.inventory.add_weapon(Weapon::new(WeaponType::Shotgun, Rarity::Epic));
+                        p.inventory.add_weapon(Weapon::new(WeaponType::Sniper, Rarity::Legendary));
+                        p.inventory.add_weapon(Weapon::new(WeaponType::Smg, Rarity::Rare));
+                        p.inventory.add_weapon(Weapon::new(WeaponType::Pistol, Rarity::Uncommon));
+                        p.inventory.materials.wood = 500;
+                        p.inventory.materials.brick = 500;
+                        p.inventory.materials.metal = 500;
+                        serial_println!("TEST: Gave player all weapons and materials");
+                    }
+                }
+
+                // Test mode: spawn all item types in a grid around the player
+                if test_mode {
+                    use game::weapon::{WeaponType, Weapon, Rarity};
+                    use game::loot::{LootItem, ChestTier};
+
+                    // Spawn weapons in a circle around the player
+                    let weapons = [
+                        WeaponType::Pistol,
+                        WeaponType::Smg,
+                        WeaponType::AssaultRifle,
+                        WeaponType::Shotgun,
+                        WeaponType::Sniper,
+                    ];
+
+                    let rarities = [
+                        Rarity::Common,
+                        Rarity::Uncommon,
+                        Rarity::Rare,
+                        Rarity::Epic,
+                        Rarity::Legendary,
+                    ];
+
+                    let center = Vec3::new(50.0, 0.5, 50.0);
+                    let mut spawn_count = 0;
+
+                    // Spawn each weapon type in each rarity
+                    for (i, weapon_type) in weapons.iter().enumerate() {
+                        for (j, rarity) in rarities.iter().enumerate() {
+                            let angle = (i * 5 + j) as f32 * 0.4;
+                            let radius = 10.0 + (i as f32 * 3.0);
+                            let pos = Vec3::new(
+                                center.x + libm::cosf(angle) * radius,
+                                0.5,
+                                center.z + libm::sinf(angle) * radius,
+                            );
+                            let weapon = Weapon::new(*weapon_type, *rarity);
+                            world.loot.spawn_drop(pos, LootItem::Weapon(weapon), false);
+                            spawn_count += 1;
+                        }
+                    }
+
+                    // Spawn chest loot (simulates opened chests) in a ring
+                    for i in 0..12 {
+                        let angle = i as f32 * (core::f32::consts::TAU / 12.0);
+                        let pos = Vec3::new(
+                            center.x + libm::cosf(angle) * 30.0,
+                            0.5,
+                            center.z + libm::sinf(angle) * 30.0,
+                        );
+                        // Spawn chest loot (weapon + ammo + maybe healing)
+                        world.loot.spawn_chest_loot(pos, ChestTier::Rare);
+                        spawn_count += 3; // Chest spawns ~3 items
+                    }
+
+                    // Spawn healing items
+                    for i in 0..8 {
+                        let angle = i as f32 * (core::f32::consts::TAU / 8.0);
+                        let pos = Vec3::new(
+                            center.x + libm::cosf(angle) * 20.0,
+                            0.5,
+                            center.z + libm::sinf(angle) * 20.0,
+                        );
+                        // Alternate between health and shield items
+                        let item = if i % 2 == 0 {
+                            LootItem::Health { amount: 100, use_time: 10.0, max_health: 100 }
+                        } else {
+                            LootItem::Shield { amount: 50, use_time: 5.0 }
+                        };
+                        world.loot.spawn_drop(pos, item, false);
+                        spawn_count += 1;
+                    }
+
+                    // Spawn materials
+                    for i in 0..6 {
+                        let angle = i as f32 * (core::f32::consts::TAU / 6.0);
+                        let pos = Vec3::new(
+                            center.x + libm::cosf(angle) * 15.0,
+                            0.5,
+                            center.z + libm::sinf(angle) * 15.0,
+                        );
+                        let item = LootItem::Materials {
+                            wood: 100,
+                            brick: 100,
+                            metal: 100,
+                        };
+                        world.loot.spawn_drop(pos, item, false);
+                        spawn_count += 1;
+                    }
+
+                    serial_println!("TEST: Spawned {} items around player", spawn_count);
                 }
             }
 
@@ -322,7 +529,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
         }
 
         // Benchmark: report FPS every 60 frames
-        if benchmark && benchmark_started {
+        if benchmark && auto_started {
             benchmark_frames += 1;
             if benchmark_frames % 60 == 0 {
                 let elapsed = read_tsc().wrapping_sub(benchmark_start_time);
