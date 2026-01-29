@@ -6,6 +6,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod game_loop;
 pub mod state_machine;
 

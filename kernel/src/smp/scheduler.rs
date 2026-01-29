@@ -137,7 +137,7 @@ unsafe extern "C" fn rasterizer_entry(cpu: &Cpu) -> ! {
         }
 
         // Do rendering work
-        crate::render_worker(rasterizer_id);
+        crate::app::render_worker(rasterizer_id);
 
         // Signal completion via barrier
         crate::smp::sync::RENDER_BARRIER.wait();
@@ -164,7 +164,7 @@ unsafe extern "C" fn network_entry(cpu: &Cpu) -> ! {
         }
 
         // Poll network
-        crate::network_worker();
+        crate::app::network_worker();
 
         // Small delay to prevent busy-waiting
         for _ in 0..1000 {

@@ -3,6 +3,9 @@ name = "kernel"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["rlib"]
+
 [dependencies]
 limine = { workspace = true }
 x86_64 = { workspace = true }

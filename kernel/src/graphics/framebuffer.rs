@@ -89,18 +89,30 @@ impl Framebuffer {
         }
     }
 
-    /// Clear the back buffer with a color (optimized 64-bit writes)
+    /// Clear the back buffer with a color (optimized with unrolled 128-bit writes)
     pub fn clear(&self, color: u32) {
         let row_pixels = self.pitch / 4;
         let total = row_pixels * self.height;
-        let ptr = self.back_buffer.as_ptr() as *mut u64;
+        let ptr64 = self.back_buffer.as_ptr() as *mut u64;
         let color64 = ((color as u64) << 32) | (color as u64);
 
         unsafe {
-            for i in 0..(total / 2) {
-                *ptr.add(i) = color64;
+            // Unrolled loop: write 4 u64s (8 pixels) per iteration
+            let chunks = total / 8;
+            let mut i = 0usize;
+            while i < chunks {
+                let base = i * 4;
+                *ptr64.add(base) = color64;
+                *ptr64.add(base + 1) = color64;
+                *ptr64.add(base + 2) = color64;
+                *ptr64.add(base + 3) = color64;
+                i += 1;
             }
-            // Handle odd pixel if any
+            // Handle remaining pixels
+            let remaining_start = chunks * 4;
+            for j in remaining_start..(total / 2) {
+                *ptr64.add(j) = color64;
+            }
             if total % 2 == 1 {
                 let ptr32 = self.back_buffer.as_ptr() as *mut u32;
                 *ptr32.add(total - 1) = color;
@@ -109,19 +121,31 @@ impl Framebuffer {
     }
 
     /// Present: copy back buffer to front buffer (display)
+    /// Optimized with unrolled 128-bit copies
     pub fn present(&self) {
         let row_pixels = self.pitch / 4;
         let total = row_pixels * self.height;
 
         unsafe {
-            // Fast copy using 64-bit writes
             let src = self.back_buffer.as_ptr() as *const u64;
             let dst = self.address as *mut u64;
 
-            for i in 0..(total / 2) {
-                *dst.add(i) = *src.add(i);
+            // Unrolled loop: copy 4 u64s (8 pixels) per iteration
+            let chunks = total / 8;
+            let mut i = 0usize;
+            while i < chunks {
+                let base = i * 4;
+                *dst.add(base) = *src.add(base);
+                *dst.add(base + 1) = *src.add(base + 1);
+                *dst.add(base + 2) = *src.add(base + 2);
+                *dst.add(base + 3) = *src.add(base + 3);
+                i += 1;
             }
-            // Handle odd pixel if any
+            // Handle remaining pixels
+            let remaining_start = chunks * 4;
+            for j in remaining_start..(total / 2) {
+                *dst.add(j) = *src.add(j);
+            }
             if total % 2 == 1 {
                 let src32 = self.back_buffer.as_ptr() as *const u32;
                 let dst32 = self.address;

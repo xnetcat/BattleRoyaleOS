@@ -1,7 +1,5 @@
 //! Tile-based parallel rendering
 
-use super::framebuffer::FRAMEBUFFER;
-use super::zbuffer::ZBuffer;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
@@ -249,10 +247,10 @@ impl TileBinLockFree {
     }
 }
 
-/// Global frame triangle buffer
+/// Global frame triangle buffer (DEPRECATED - kept for compatibility, use TRIANGLE_STORAGE)
 pub static FRAME_TRIANGLES: Mutex<Option<Vec<ScreenTriangle>>> = Mutex::new(None);
 
-/// Atomic count of triangles in current frame
+/// Atomic count of triangles in current frame (now uses TRIANGLE_STORAGE internally)
 pub static TRIANGLE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Maximum number of tiles (for static allocation)
@@ -269,26 +267,25 @@ pub static TILE_BINS_LOCKFREE: [TileBinLockFree; MAX_TILES] = {
 pub fn init_triangle_buffer() {
     let mut buf = FRAME_TRIANGLES.lock();
     let mut triangles = Vec::with_capacity(MAX_TRIANGLES_PER_FRAME);
-    // Pre-allocate to avoid runtime allocation
     triangles.resize(MAX_TRIANGLES_PER_FRAME, unsafe { core::mem::zeroed() });
     *buf = Some(triangles);
     TRIANGLE_COUNT.store(0, Ordering::Release);
 }
 
 /// Reset triangle buffer for new frame
+#[inline]
 pub fn reset_triangle_buffer() {
     TRIANGLE_COUNT.store(0, Ordering::Release);
 }
 
 /// Add a screen triangle to the frame buffer
 /// Returns the triangle index, or None if buffer is full
+#[inline]
 pub fn add_triangle(tri: ScreenTriangle) -> Option<u16> {
     let idx = TRIANGLE_COUNT.fetch_add(1, Ordering::AcqRel);
     if idx >= MAX_TRIANGLES_PER_FRAME {
         return None;
     }
-
-    // Store triangle in buffer
     if let Some(buf) = FRAME_TRIANGLES.lock().as_mut() {
         buf[idx] = tri;
         Some(idx as u16)

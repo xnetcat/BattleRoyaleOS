@@ -63,17 +63,16 @@ pub fn transform_triangle(
     }
 
     // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
-    // since screen_z = 1/w (larger = closer), checking z > 1.0 rejected close objects.
-    // Z-buffer handles depth ordering correctly without this check.
 
-    // Backface culling DISABLED for debugging - draw all triangles
-    // TODO: Re-enable after fixing voxel face winding order
-    // let edge1 = tv1.position - tv0.position;
-    // let edge2 = tv2.position - tv0.position;
-    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-    // if cross_z > 0.0 {
-    //     return None;
-    // }
+    // Backface culling using screen-space winding order
+    // In screen space with Y pointing down, front-facing triangles
+    // (CCW in world space) become CW in screen space, giving negative cross_z
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    if cross_z > 0.0 {
+        return None;
+    }
 
     Some((tv0, tv1, tv2))
 }
@@ -136,13 +135,13 @@ pub fn transform_and_bin(
 
     // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling DISABLED for debugging
-    // let edge1 = tv1.position - tv0.position;
-    // let edge2 = tv2.position - tv0.position;
-    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-    // if cross_z > 0.0 {
-    //     return None;
-    // }
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    if cross_z > 0.0 {
+        return None;
+    }
 
     // Create ScreenTriangle with pre-computed edge coefficients
     ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32)
@@ -216,14 +215,13 @@ pub fn transform_and_gpu_batch(
 
     // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling DISABLED for debugging - draw all triangles
-    // TODO: Re-enable after fixing voxel face winding order
-    // let edge1 = tv1.position - tv0.position;
-    // let edge2 = tv2.position - tv0.position;
-    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-    // if cross_z > 0.0 {
-    //     return false;
-    // }
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    if cross_z > 0.0 {
+        return false;
+    }
 
     // Add to GPU batch with screen-space coordinates and colors
     gpu_batch::add_screen_triangle(
@@ -265,14 +263,13 @@ pub fn transform_and_bin_hybrid(
 
     // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling DISABLED for debugging - draw all triangles
-    // TODO: Re-enable after fixing voxel face winding order
-    // let edge1 = tv1.position - tv0.position;
-    // let edge2 = tv2.position - tv0.position;
-    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-    // if cross_z > 0.0 {
-    //     return (None, false);
-    // }
+    // Backface culling using screen-space winding order
+    let edge1 = tv1.position - tv0.position;
+    let edge2 = tv2.position - tv0.position;
+    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    if cross_z > 0.0 {
+        return (None, false);
+    }
 
     // If GPU batch is enabled, add triangle to GPU batch
     if use_gpu_batch && gpu_batch::is_enabled() && gpu_batch::is_active() {
