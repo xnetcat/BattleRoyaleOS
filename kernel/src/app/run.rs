@@ -61,7 +61,9 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
 
     // Create reusable meshes for game entities using VOXEL MODELS
     // Terrain: 3D heightmap with proper hills
-    let terrain = create_3d_terrain(2000.0, 15); // 15 subdivisions for 60 FPS target
+    // 40 subdivisions = 3200 triangles, each cell ~50 units wide
+    // Balances visible 3D terrain with performance
+    let terrain = create_3d_terrain(2000.0, 40); // 40 subdivisions for balanced terrain
 
     // Player mesh from detailed voxel model (use default customization for now)
     let default_custom = renderer::voxel::CharacterCustomization::default();
@@ -83,10 +85,12 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
     let storm_wall_mesh = mesh::create_storm_wall(24, 200.0); // 24 segments for performance
 
     // LOD meshes for distant objects (much fewer triangles)
-    let tree_pine_lod = renderer::voxel_models::create_pine_tree_lod().to_mesh(0.5);
-    let tree_oak_lod = renderer::voxel_models::create_oak_tree_lod().to_mesh(0.5);
-    let rock_lod = renderer::voxel_models::create_rock_lod().to_mesh(0.4);
-    let chest_lod = renderer::voxel_models::create_chest_lod().to_mesh(0.15);
+    // Scale factors compensate for smaller voxel dimensions to match world-space size
+    // Full pine: 10 voxels * 0.5 = 5 units; LOD pine: 4 voxels * 1.25 = 5 units
+    let tree_pine_lod = renderer::voxel_models::create_pine_tree_lod().to_mesh(1.25);
+    let tree_oak_lod = renderer::voxel_models::create_oak_tree_lod().to_mesh(1.2);
+    let rock_lod = renderer::voxel_models::create_rock_lod().to_mesh(0.8);
+    let chest_lod = renderer::voxel_models::create_chest_lod().to_mesh(0.3);
 
     // Weapon meshes from detailed voxel models
     let shotgun_mesh = renderer::voxel_models::create_shotgun_model().to_mesh(0.08);
@@ -512,8 +516,9 @@ fn handle_gameplay(
         // Mouse look sensitivity (adjusted for smooth camera)
         const MOUSE_SENSITIVITY: f32 = 0.002;
 
-        // Update camera rotation with mouse movement ONLY
-        *player_yaw += mouse.delta_x as f32 * MOUSE_SENSITIVITY;
+        // Update camera rotation with mouse movement
+        // Invert X for proper third-person camera orbit (mouse right = look right)
+        *player_yaw -= mouse.delta_x as f32 * MOUSE_SENSITIVITY;
         *player_pitch -= mouse.delta_y as f32 * MOUSE_SENSITIVITY;
 
         // Clamp pitch to prevent camera flipping (roughly -85 to +85 degrees)

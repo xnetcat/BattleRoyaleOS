@@ -218,7 +218,9 @@ impl Player {
             self.flags &= !PlayerStateFlags::BUILDING;
         }
 
-        // Calculate movement direction
+        // Calculate movement direction (consistent with freefall/gliding)
+        // At yaw=0: forward = +Z, model faces +Z (rotated by PI from natural -Z)
+        // Camera is at -Z (behind player), so camera sees player's back
         let forward = Vec3::new(libm::sinf(self.yaw), 0.0, libm::cosf(self.yaw));
         let right = Vec3::new(libm::cosf(self.yaw), 0.0, -libm::sinf(self.yaw));
 

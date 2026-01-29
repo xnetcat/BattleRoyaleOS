@@ -349,22 +349,17 @@ pub fn render_game_frame(
                     PlayerPhase::Freefall | PlayerPhase::Gliding => 4.0,
                     _ => 3.0,
                 };
-                // Third-person camera behind and above player
-                // Incorporates both yaw (horizontal) and pitch (vertical) for proper look
+                // Third-person camera: behind and above player, looking AT the player
+                // Camera orbits around player based on yaw, staying behind them
                 let cam_offset = Vec3::new(
-                    -libm::sinf(player.yaw) * libm::cosf(player.pitch) * cam_dist,
-                    cam_height + libm::sinf(player.pitch) * cam_dist * 0.5,
-                    -libm::cosf(player.yaw) * libm::cosf(player.pitch) * cam_dist,
+                    -libm::sinf(player.yaw) * cam_dist,
+                    cam_height,
+                    -libm::cosf(player.yaw) * cam_dist,
                 );
                 let pos = player.position + cam_offset;
 
-                // Look target: where the player is aiming (uses pitch for up/down look)
-                let look_dist = 10.0;
-                let target = player.position + Vec3::new(
-                    libm::sinf(player.yaw) * libm::cosf(player.pitch) * look_dist,
-                    1.5 + libm::sinf(player.pitch) * look_dist, // Eye height + pitch
-                    libm::cosf(player.yaw) * libm::cosf(player.pitch) * look_dist,
-                );
+                // Camera looks at player's upper body (not the ground)
+                let target = player.position + Vec3::new(0.0, 1.5, 0.0);
                 (pos, target, Some(player.phase))
             } else {
                 let dist = 20.0;
@@ -568,6 +563,7 @@ fn render_game_gpu(
                     continue;
                 }
 
+                // Player model faces -Z naturally, add PI to face forward (away from camera)
                 let model = Mat4::from_translation(player.position)
                     * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
                 bin_mesh_gpu(player_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
@@ -665,11 +661,11 @@ fn render_game_software(
 
             // Render vegetation with AGGRESSIVE distance culling and LOD for software rendering
             // Max render distances - Trees: 40m, Rocks: 30m, Bushes: 20m
-            // LOD threshold - use simplified meshes beyond 8m (very aggressive for performance)
+            // LOD threshold - use simplified meshes beyond 20m (balanced for quality)
             const TREE_RENDER_DIST: f32 = 40.0;
             const ROCK_RENDER_DIST: f32 = 30.0;
             const BUSH_RENDER_DIST: f32 = 20.0;
-            const LOD_THRESHOLD_SQ: f32 = 8.0 * 8.0; // Use LOD beyond 8 meters (aggressive!)
+            const LOD_THRESHOLD_SQ: f32 = 20.0 * 20.0; // Use LOD beyond 20 meters (balanced)
 
             for i in 0..w.map.vegetation_count {
                 if let Some(veg) = &w.map.vegetation[i] {
@@ -726,7 +722,7 @@ fn render_game_software(
 
             // Render loot drops with distance culling and LOD (25m max)
             const LOOT_RENDER_DIST: f32 = 25.0;
-            const LOOT_LOD_THRESHOLD_SQ: f32 = 6.0 * 6.0; // LOD beyond 6m for loot (aggressive!)
+            const LOOT_LOD_THRESHOLD_SQ: f32 = 15.0 * 15.0; // LOD beyond 15m for loot (balanced)
             for drop in w.loot.get_active_drops() {
                 let dx = drop.position.x - camera_pos.x;
                 let dz = drop.position.z - camera_pos.z;
@@ -749,6 +745,7 @@ fn render_game_software(
                     continue;
                 }
 
+                // Player model faces -Z naturally, add PI to face forward (away from camera)
                 let model = Mat4::from_translation(player.position)
                     * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
                 bin_mesh(player_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
