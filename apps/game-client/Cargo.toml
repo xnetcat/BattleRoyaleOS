@@ -1,0 +1,15 @@
+[package]
+name = "game-client"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+glam = { version = "0.29", default-features = false, features = ["libm"] }
+libm = "0.2"
+game-types = { path = "../../shared/game-types" }
+
+[features]
+default = []

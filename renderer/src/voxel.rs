@@ -306,19 +306,21 @@ impl VoxelModel {
         let wy = (y as f32 - self.origin.y) * scale;
         let wz = (z as f32 - self.origin.z) * scale;
 
-        // Define face vertices (4 corners)
+        // Define face vertices (4 corners) - CCW winding when viewed from outside
         let positions: [Vec3; 4] = match face {
             Face::Top => [
+                // CCW when viewed from +Y (above): back-left, front-left, front-right, back-right
                 Vec3::new(wx, wy + scale, wz),
-                Vec3::new(wx + scale, wy + scale, wz),
-                Vec3::new(wx + scale, wy + scale, wz + scale),
                 Vec3::new(wx, wy + scale, wz + scale),
+                Vec3::new(wx + scale, wy + scale, wz + scale),
+                Vec3::new(wx + scale, wy + scale, wz),
             ],
             Face::Bottom => [
+                // CCW when viewed from -Y (below): front-left, back-left, back-right, front-right
                 Vec3::new(wx, wy, wz + scale),
-                Vec3::new(wx + scale, wy, wz + scale),
-                Vec3::new(wx + scale, wy, wz),
                 Vec3::new(wx, wy, wz),
+                Vec3::new(wx + scale, wy, wz),
+                Vec3::new(wx + scale, wy, wz + scale),
             ],
             Face::Front => [
                 Vec3::new(wx, wy, wz + scale),

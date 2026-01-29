@@ -1,0 +1,12 @@
+[package]
+name = "game-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glam = { version = "0.24", default-features = false, features = ["libm"] }
+libm = "0.2"
+
+[features]
+default = []
+std = []

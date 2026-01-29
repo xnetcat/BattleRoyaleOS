@@ -22,9 +22,11 @@ static TEST_MODE: AtomicBool = AtomicBool::new(false);
 /// Global GPU batch enabled flag - checked once at init, used per-frame without locks
 static GPU_BATCH_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+mod api;
 mod boot;
 mod drivers;
 mod game;
+mod gfx;
 mod graphics;
 mod memory;
 mod net;
@@ -315,7 +317,7 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
 
     // Create reusable meshes for game entities using VOXEL MODELS
     // Terrain: 3D heightmap with proper hills
-    let terrain = create_3d_terrain(2000.0, 50); // 50 subdivisions for good balance
+    let terrain = create_3d_terrain(2000.0, 30); // 30 subdivisions for better performance
 
     // Player mesh from detailed voxel model (use default customization for now)
     let default_custom = renderer::voxel::CharacterCustomization::default();
@@ -324,8 +326,8 @@ fn main_loop(fb_width: usize, fb_height: usize) -> ! {
     // Building pieces from voxel models
     let wall_mesh = renderer::voxel_models::create_wall_wood().to_mesh(0.25);
 
-    // Battle bus from detailed voxel model (includes balloon)
-    let bus_mesh = renderer::voxel_models::create_battle_bus().to_mesh(0.15);
+    // Battle bus from voxel model (includes balloon)
+    let bus_mesh = renderer::voxel_models::create_battle_bus().to_mesh(0.30);
 
     // Additional meshes for complete game rendering
     let glider_mesh = renderer::voxel_models::create_glider_model(0).to_mesh(0.15);

@@ -57,26 +57,23 @@ pub fn transform_triangle(
     let tv1 = transform_vertex(v1, model, view, projection, viewport_width, viewport_height);
     let tv2 = transform_vertex(v2, model, view, projection, viewport_width, viewport_height);
 
-    // Near plane clipping (simple rejection)
+    // Near plane clipping: reject if behind camera (w < 0 means 1/w < 0)
     if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
         return None;
     }
 
-    // Far plane clipping
-    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
-        return None;
-    }
+    // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
+    // since screen_z = 1/w (larger = closer), checking z > 1.0 rejected close objects.
+    // Z-buffer handles depth ordering correctly without this check.
 
-    // Backface culling using screen-space winding order
-    let edge1 = tv1.position - tv0.position;
-    let edge2 = tv2.position - tv0.position;
-    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-
-    // In screen space with Y pointing down, front-facing triangles
-    // (CCW in world space) become CW, giving negative cross_z
-    if cross_z > 0.0 {
-        return None;
-    }
+    // Backface culling DISABLED for debugging - draw all triangles
+    // TODO: Re-enable after fixing voxel face winding order
+    // let edge1 = tv1.position - tv0.position;
+    // let edge2 = tv2.position - tv0.position;
+    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    // if cross_z > 0.0 {
+    //     return None;
+    // }
 
     Some((tv0, tv1, tv2))
 }
@@ -132,26 +129,20 @@ pub fn transform_and_bin(
     let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
     let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
 
-    // Near plane clipping (simple rejection)
+    // Near plane clipping: reject if behind camera (w < 0 means 1/w < 0)
     if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
         return None;
     }
 
-    // Far plane clipping
-    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
-        return None;
-    }
+    // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling using screen-space winding order
-    let edge1 = tv1.position - tv0.position;
-    let edge2 = tv2.position - tv0.position;
-    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-
-    // In screen space with Y pointing down, front-facing triangles
-    // (CCW in world space) become CW, giving negative cross_z
-    if cross_z > 0.0 {
-        return None;
-    }
+    // Backface culling DISABLED for debugging
+    // let edge1 = tv1.position - tv0.position;
+    // let edge2 = tv2.position - tv0.position;
+    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    // if cross_z > 0.0 {
+    //     return None;
+    // }
 
     // Create ScreenTriangle with pre-computed edge coefficients
     ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32)
@@ -218,26 +209,21 @@ pub fn transform_and_gpu_batch(
     let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
     let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
 
-    // Near plane clipping (simple rejection)
+    // Near plane clipping: reject if behind camera (w < 0 means 1/w < 0)
     if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
         return false;
     }
 
-    // Far plane clipping
-    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
-        return false;
-    }
+    // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling using screen-space winding order
-    let edge1 = tv1.position - tv0.position;
-    let edge2 = tv2.position - tv0.position;
-    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-
-    // In screen space with Y pointing down, front-facing triangles
-    // (CCW in world space) become CW, giving negative cross_z
-    if cross_z > 0.0 {
-        return false;
-    }
+    // Backface culling DISABLED for debugging - draw all triangles
+    // TODO: Re-enable after fixing voxel face winding order
+    // let edge1 = tv1.position - tv0.position;
+    // let edge2 = tv2.position - tv0.position;
+    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    // if cross_z > 0.0 {
+    //     return false;
+    // }
 
     // Add to GPU batch with screen-space coordinates and colors
     gpu_batch::add_screen_triangle(
@@ -272,26 +258,21 @@ pub fn transform_and_bin_hybrid(
     let tv1 = transform_vertex(v1, model, view, projection, fb_width, fb_height);
     let tv2 = transform_vertex(v2, model, view, projection, fb_width, fb_height);
 
-    // Near plane clipping (simple rejection)
+    // Near plane clipping: reject if behind camera (w < 0 means 1/w < 0)
     if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
         return (None, false);
     }
 
-    // Far plane clipping
-    if tv0.position.z > 1.0 && tv1.position.z > 1.0 && tv2.position.z > 1.0 {
-        return (None, false);
-    }
+    // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
-    // Backface culling using screen-space winding order
-    let edge1 = tv1.position - tv0.position;
-    let edge2 = tv2.position - tv0.position;
-    let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
-
-    // In screen space with Y pointing down, front-facing triangles
-    // (CCW in world space) become CW, giving negative cross_z
-    if cross_z > 0.0 {
-        return (None, false);
-    }
+    // Backface culling DISABLED for debugging - draw all triangles
+    // TODO: Re-enable after fixing voxel face winding order
+    // let edge1 = tv1.position - tv0.position;
+    // let edge2 = tv2.position - tv0.position;
+    // let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    // if cross_z > 0.0 {
+    //     return (None, false);
+    // }
 
     // If GPU batch is enabled, add triangle to GPU batch
     if use_gpu_batch && gpu_batch::is_enabled() && gpu_batch::is_active() {

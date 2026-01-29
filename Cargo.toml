@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["kernel", "renderer", "protocol"]
+members = [
+    "kernel",
+    "renderer",
+    "protocol",
+    "shared/game-types",
+    "apps/game-client",
+    "apps/game-server",
+    "apps/benchmark",
+    "apps/test-harness",
+    "boot",
+]
 
 [workspace.dependencies]
 limine = "0.5"

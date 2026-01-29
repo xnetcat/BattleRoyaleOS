@@ -784,259 +784,53 @@ pub fn create_ramp_wood() -> VoxelModel {
     model
 }
 
-/// Create the battle bus with detailed features
-/// Size: 40x32x64 voxels (double resolution for detail)
+/// Create the battle bus with balloon
+/// Size: 20x16x32 voxels (optimized for performance)
 pub fn create_battle_bus() -> VoxelModel {
-    let mut model = VoxelModel::with_origin(40, 32, 64, Vec3::new(20.0, 0.0, 32.0));
+    let mut model = VoxelModel::with_origin(20, 16, 32, Vec3::new(10.0, 0.0, 16.0));
 
-    // Colors
     let body_blue = palette::BUS_BLUE;
     let body_light = palette::BUS_LIGHT_BLUE;
-    let body_dark = VoxelColor::from_hex(0x1A4488);
     let window = palette::GLASS;
-    let window_frame = palette::CHROME_DARK;
     let wheel = palette::RUBBER;
-    let wheel_hub = palette::CHROME;
-    let bumper = palette::CHROME;
-    let headlight = palette::HEADLIGHT;
-    let taillight = palette::TAILLIGHT;
-    let grille = VoxelColor::from_hex(0x333333);
-    let door_handle = palette::CHROME;
-    let exhaust = palette::METAL_DARK;
-    let mirror = palette::CHROME_DARK;
-
-    // === BUS BODY (main structure) ===
-    // Main body (rounded corners implied by layered fill)
-    model.fill_box(4, 2, 8, 35, 16, 55, body_blue);
-
-    // Roof (slightly lighter)
-    model.fill_box(5, 17, 9, 34, 18, 54, body_light);
-    model.fill_box(6, 19, 10, 33, 19, 53, body_light);
-
-    // Lower body trim (darker accent)
-    model.fill_box(4, 2, 8, 35, 3, 55, body_dark);
-
-    // === FRONT SECTION ===
-    // Front panel
-    model.fill_box(8, 3, 2, 31, 14, 7, body_blue);
-    model.fill_box(8, 3, 1, 31, 12, 1, body_blue);
-
-    // Grille (4-slot design)
-    model.fill_box(12, 4, 1, 27, 8, 1, grille);
-    model.fill_box(14, 5, 0, 16, 7, 0, grille);
-    model.fill_box(18, 5, 0, 20, 7, 0, grille);
-    model.fill_box(21, 5, 0, 23, 7, 0, grille);
-    model.fill_box(25, 5, 0, 27, 7, 0, grille);
-
-    // Headlights (dual on each side)
-    model.fill_box(9, 6, 0, 11, 8, 1, headlight);
-    model.fill_box(9, 4, 0, 11, 5, 1, headlight);
-    model.fill_box(28, 6, 0, 30, 8, 1, headlight);
-    model.fill_box(28, 4, 0, 30, 5, 1, headlight);
-
-    // Front bumper
-    model.fill_box(6, 1, 0, 33, 2, 2, bumper);
-    model.fill_box(8, 0, 1, 31, 0, 1, bumper);
-
-    // Windshield with frame
-    model.fill_box(10, 10, 2, 29, 16, 2, window);
-    model.fill_box(9, 10, 2, 9, 16, 2, window_frame);
-    model.fill_box(30, 10, 2, 30, 16, 2, window_frame);
-    model.fill_box(10, 9, 2, 29, 9, 2, window_frame);
-    model.fill_box(10, 17, 2, 29, 17, 2, window_frame);
-
-    // === SIDE WINDOWS (8 per side with frames) ===
-    for i in 0..8 {
-        let z = 12 + i * 5;
-        // Left side windows
-        model.fill_box(4, 8, z, 4, 14, z + 3, window);
-        model.fill_box(4, 7, z, 4, 7, z + 3, window_frame);
-        model.fill_box(4, 15, z, 4, 15, z + 3, window_frame);
-        model.fill_box(4, 8, z - 1, 4, 14, z - 1, window_frame);
-        model.fill_box(4, 8, z + 4, 4, 14, z + 4, window_frame);
-
-        // Right side windows
-        model.fill_box(35, 8, z, 35, 14, z + 3, window);
-        model.fill_box(35, 7, z, 35, 7, z + 3, window_frame);
-        model.fill_box(35, 15, z, 35, 15, z + 3, window_frame);
-        model.fill_box(35, 8, z - 1, 35, 14, z - 1, window_frame);
-        model.fill_box(35, 8, z + 4, 35, 14, z + 4, window_frame);
-    }
-
-    // === DOOR OUTLINES AND HANDLES ===
-    // Front door (left side)
-    model.fill_box(3, 3, 14, 3, 15, 14, body_dark);
-    model.fill_box(3, 3, 22, 3, 15, 22, body_dark);
-    model.set_color(3, 9, 20, door_handle);
-    model.set_color(3, 9, 21, door_handle);
-
-    // Rear door (left side)
-    model.fill_box(3, 3, 36, 3, 15, 36, body_dark);
-    model.fill_box(3, 3, 44, 3, 15, 44, body_dark);
-    model.set_color(3, 9, 42, door_handle);
-    model.set_color(3, 9, 43, door_handle);
-
-    // === SIDE MIRRORS ===
-    model.fill_box(2, 12, 6, 2, 14, 8, mirror);
-    model.fill_box(37, 12, 6, 37, 14, 8, mirror);
-
-    // === WHEELS (with hub caps and tread detail) ===
-    // Front wheels
-    for wx in [6, 7, 32, 33].iter() {
-        for wz in [10, 11, 12].iter() {
-            model.fill_box(*wx, 0, *wz, *wx, 3, *wz, wheel);
-        }
-    }
-    model.set_color(6, 1, 11, wheel_hub);
-    model.set_color(33, 1, 11, wheel_hub);
-
-    // Rear wheels
-    for wx in [6, 7, 32, 33].iter() {
-        for wz in [46, 47, 48].iter() {
-            model.fill_box(*wx, 0, *wz, *wx, 3, *wz, wheel);
-        }
-    }
-    model.set_color(6, 1, 47, wheel_hub);
-    model.set_color(33, 1, 47, wheel_hub);
-
-    // Wheel wells (darker recesses)
-    model.fill_box(5, 2, 9, 8, 4, 13, body_dark);
-    model.fill_box(31, 2, 9, 34, 4, 13, body_dark);
-    model.fill_box(5, 2, 45, 8, 4, 49, body_dark);
-    model.fill_box(31, 2, 45, 34, 4, 49, body_dark);
-
-    // === REAR SECTION ===
-    // Rear panel
-    model.fill_box(8, 3, 56, 31, 14, 57, body_blue);
-
-    // Rear window
-    model.fill_box(12, 8, 57, 27, 14, 57, window);
-    model.fill_box(11, 8, 57, 11, 14, 57, window_frame);
-    model.fill_box(28, 8, 57, 28, 14, 57, window_frame);
-
-    // Taillights
-    model.fill_box(8, 5, 57, 10, 8, 58, taillight);
-    model.fill_box(29, 5, 57, 31, 8, 58, taillight);
-
-    // Rear bumper
-    model.fill_box(6, 1, 56, 33, 2, 58, bumper);
-
-    // Exhaust pipe
-    model.fill_box(28, 1, 58, 30, 2, 60, exhaust);
-
-    // === BALLOON (integrated, more detailed) ===
-    let balloon = create_balloon();
-    model.merge(&balloon, 4, 20, 16);
-
-    model
-}
-
-/// Create a detailed hot air balloon for the battle bus
-/// Size: 32x24x32 voxels (separate model for clarity)
-pub fn create_balloon() -> VoxelModel {
-    let mut model = VoxelModel::with_origin(32, 24, 32, Vec3::new(16.0, 0.0, 16.0));
-
-    let red = palette::BALLOON_RED;
-    let white = palette::BALLOON_WHITE;
+    let balloon_red = palette::BALLOON_RED;
+    let balloon_stripe = palette::BALLOON_WHITE;
     let rope = palette::ROPE_BROWN;
-    let vent = VoxelColor::from_hex(0x444444);
 
-    // === MAIN BALLOON ENVELOPE (elongated oval shape) ===
-    // Bottom layer (attachment point)
-    model.fill_box(12, 0, 12, 19, 1, 19, red);
-
-    // Lower section (widening)
-    model.fill_box(10, 2, 10, 21, 4, 21, red);
-    model.fill_box(8, 5, 8, 23, 7, 23, red);
-
-    // Middle section (widest)
-    model.fill_box(6, 8, 6, 25, 12, 25, red);
-    model.fill_box(5, 10, 7, 26, 11, 24, red);
-    model.fill_box(7, 10, 5, 24, 11, 26, red);
-
-    // Upper section (narrowing)
-    model.fill_box(8, 13, 8, 23, 16, 23, red);
-    model.fill_box(10, 17, 10, 21, 20, 21, red);
-
-    // Top section (dome)
-    model.fill_box(12, 21, 12, 19, 22, 19, red);
-    model.fill_box(14, 23, 14, 17, 23, 17, red);
-
-    // === 8 VERTICAL STRIPES (alternating red/white) ===
-    // Stripe 1 (front)
-    for y in 2..23 {
-        model.fill_box(15, y, 5, 16, y, 7, white);
-    }
-    // Stripe 2 (back)
-    for y in 2..23 {
-        model.fill_box(15, y, 24, 16, y, 26, white);
-    }
-    // Stripe 3 (left)
-    for y in 2..23 {
-        model.fill_box(5, y, 15, 7, y, 16, white);
-    }
-    // Stripe 4 (right)
-    for y in 2..23 {
-        model.fill_box(24, y, 15, 26, y, 16, white);
-    }
-    // Diagonal stripes (front-left, front-right, back-left, back-right)
-    for y in 5..20 {
-        let offset = (y - 5) / 3;
-        if 8 + offset < 24 && 8 + offset < 24 {
-            model.set_color(8 + offset, y, 8 + offset, white);
-            model.set_color(23 - offset, y, 8 + offset, white);
-            model.set_color(8 + offset, y, 23 - offset, white);
-            model.set_color(23 - offset, y, 23 - offset, white);
-        }
+    // === BUS BODY ===
+    // Main body
+    model.fill_box(2, 0, 4, 17, 8, 27, body_blue);
+    // Roof
+    model.fill_box(3, 9, 5, 16, 9, 26, body_light);
+    // Front
+    model.fill_box(4, 1, 1, 15, 7, 3, body_blue);
+    // Windshield
+    model.fill_box(5, 4, 1, 14, 7, 1, window);
+    // Side windows
+    for z in [6, 10, 14, 18, 22].iter() {
+        model.fill_box(2, 4, *z, 2, 7, *z + 2, window);
+        model.fill_box(17, 4, *z, 17, 7, *z + 2, window);
     }
 
-    // === VENT AT TOP ===
-    model.fill_box(14, 23, 14, 17, 23, 17, vent);
+    // Wheels
+    model.fill_box(3, 0, 5, 4, 1, 7, wheel);
+    model.fill_box(15, 0, 5, 16, 1, 7, wheel);
+    model.fill_box(3, 0, 23, 4, 1, 25, wheel);
+    model.fill_box(15, 0, 23, 16, 1, 25, wheel);
 
-    // === SUSPENSION ROPES (12 ropes to corners) ===
-    // Front-left ropes
-    for i in 0..6 {
-        model.set_color(10 - i, i, 10 - i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(12 - i, i, 10 - i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(10 - i, i, 12 - i, rope);
-    }
+    // === BALLOON ===
+    // Main balloon body (stretched sphere)
+    model.fill_box(4, 12, 8, 15, 15, 23, balloon_red);
+    model.fill_box(3, 13, 10, 16, 14, 21, balloon_red);
+    model.fill_box(5, 11, 10, 14, 11, 21, balloon_red);
 
-    // Front-right ropes
-    for i in 0..6 {
-        model.set_color(21 + i, i, 10 - i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(19 + i, i, 10 - i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(21 + i, i, 12 - i, rope);
-    }
+    // White stripes
+    model.fill_box(9, 12, 8, 10, 15, 23, balloon_stripe);
+    model.fill_box(4, 12, 15, 15, 15, 16, balloon_stripe);
 
-    // Back-left ropes
-    for i in 0..6 {
-        model.set_color(10 - i, i, 21 + i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(12 - i, i, 21 + i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(10 - i, i, 19 + i, rope);
-    }
-
-    // Back-right ropes
-    for i in 0..6 {
-        model.set_color(21 + i, i, 21 + i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(19 + i, i, 21 + i, rope);
-    }
-    for i in 0..6 {
-        model.set_color(21 + i, i, 19 + i, rope);
-    }
+    // Ropes connecting balloon to bus
+    model.fill_box(9, 10, 10, 10, 11, 10, rope);
+    model.fill_box(9, 10, 21, 10, 11, 21, rope);
 
     model
 }

@@ -200,3 +200,18 @@ pub fn poll(timestamp_ms: i64) {
         stack.poll(timestamp_ms);
     }
 }
+
+/// Check if network stack is initialized
+pub fn is_initialized() -> bool {
+    NETWORK_STACK.lock().is_some()
+}
+
+/// Get local IP address
+pub fn local_ip() -> Option<[u8; 4]> {
+    // Return the fixed IP we use for QEMU user networking
+    if is_initialized() {
+        Some([10, 0, 2, 15])
+    } else {
+        None
+    }
+}
