@@ -17,8 +17,8 @@ use crate::graphics::gpu;
 use crate::graphics::gpu_batch;
 use crate::graphics::gpu_render;
 use crate::graphics::cursor;
-use crate::graphics::pipeline::{look_at, transform_and_bin, transform_triangle};
-use crate::graphics::rasterizer::{rasterize_screen_triangle_in_tile, RenderContext};
+use crate::graphics::pipeline::{look_at, transform_and_bin_fast, transform_triangle};
+use crate::graphics::rasterizer::{rasterize_screen_triangle_simple, RenderContext};
 use crate::graphics::tiles::{self, TILE_BINS_LOCKFREE, TILE_QUEUE};
 use crate::graphics::ui::panel;
 use crate::smp;
@@ -754,18 +754,19 @@ pub fn bin_mesh(
 ) -> usize {
     let mut binned = 0;
 
+    // Precompute MVP matrix ONCE per mesh (instead of 3 matrix muls per vertex!)
+    let mvp = *projection * *view * *model;
+
     // Use the simple software path - GPU batch will be used when SVGA3D is available
     // The is_enabled() check is done once at startup, not per-triangle
     for i in 0..mesh.triangle_count() {
         if let Some((v0, v1, v2)) = mesh.get_triangle(i) {
-            // Transform and create ScreenTriangle
-            if let Some(screen_tri) = transform_and_bin(
+            // Transform and create ScreenTriangle using precomputed MVP
+            if let Some(screen_tri) = transform_and_bin_fast(
                 v0,
                 v1,
                 v2,
-                model,
-                view,
-                projection,
+                &mvp,
                 fb_width,
                 fb_height,
             ) {
@@ -895,7 +896,7 @@ fn rasterize_tile(
     for i in 0..tri_count {
         if let Some(tri_idx) = bin.get(i) {
             if let Some(tri) = tiles::get_triangle(tri_idx) {
-                rasterize_screen_triangle_in_tile(
+                rasterize_screen_triangle_simple(
                     ctx,
                     &tri,
                     tile_min_x,

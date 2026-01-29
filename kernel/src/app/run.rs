@@ -622,45 +622,41 @@ fn spawn_test_items(world: &mut crate::game::world::GameWorld) {
     let center = Vec3::new(50.0, 0.5, 50.0);
     let mut spawn_count = 0;
 
-    // Spawn each weapon type in each rarity
+    // Spawn one weapon of each type (reduced for performance testing)
     for (i, weapon_type) in weapons.iter().enumerate() {
-        for (j, rarity) in rarities.iter().enumerate() {
-            let angle = (i * 5 + j) as f32 * 0.4;
-            let radius = 10.0 + (i as f32 * 3.0);
-            let pos = Vec3::new(
-                center.x + libm::cosf(angle) * radius,
-                0.5,
-                center.z + libm::sinf(angle) * radius,
-            );
-            let weapon = Weapon::new(*weapon_type, *rarity);
-            world.loot.spawn_drop(pos, LootItem::Weapon(weapon), false);
-            spawn_count += 1;
-        }
+        let angle = i as f32 * 1.2;
+        let radius = 8.0;
+        let pos = Vec3::new(
+            center.x + libm::cosf(angle) * radius,
+            0.5,
+            center.z + libm::sinf(angle) * radius,
+        );
+        let weapon = Weapon::new(*weapon_type, rarities[i % rarities.len()]);
+        world.loot.spawn_drop(pos, LootItem::Weapon(weapon), false);
+        spawn_count += 1;
     }
 
-    // Spawn chest loot (simulates opened chests) in a ring
-    for i in 0..12 {
-        let angle = i as f32 * (core::f32::consts::TAU / 12.0);
+    // Spawn just 3 chest loot piles
+    for i in 0..3 {
+        let angle = i as f32 * (core::f32::consts::TAU / 3.0);
         let pos = Vec3::new(
-            center.x + libm::cosf(angle) * 30.0,
+            center.x + libm::cosf(angle) * 15.0,
             0.5,
-            center.z + libm::sinf(angle) * 30.0,
+            center.z + libm::sinf(angle) * 15.0,
         );
-        // Spawn chest loot (weapon + ammo + maybe healing)
         world.loot.spawn_chest_loot(pos, ChestTier::Rare);
-        spawn_count += 3; // Chest spawns ~3 items
+        spawn_count += 3;
     }
 
-    // Spawn healing items
-    for i in 0..8 {
-        let angle = i as f32 * (core::f32::consts::TAU / 8.0);
+    // Spawn 2 healing items
+    for i in 0..2 {
+        let angle = i as f32 * core::f32::consts::PI;
         let pos = Vec3::new(
-            center.x + libm::cosf(angle) * 20.0,
+            center.x + libm::cosf(angle) * 12.0,
             0.5,
-            center.z + libm::sinf(angle) * 20.0,
+            center.z + libm::sinf(angle) * 12.0,
         );
-        // Alternate between health and shield items
-        let item = if i % 2 == 0 {
+        let item = if i == 0 {
             LootItem::Health { amount: 100, use_time: 10.0, max_health: 100 }
         } else {
             LootItem::Shield { amount: 50, use_time: 5.0 }
@@ -669,28 +665,11 @@ fn spawn_test_items(world: &mut crate::game::world::GameWorld) {
         spawn_count += 1;
     }
 
-    // Spawn materials
-    for i in 0..6 {
-        let angle = i as f32 * (core::f32::consts::TAU / 6.0);
-        let pos = Vec3::new(
-            center.x + libm::cosf(angle) * 15.0,
-            0.5,
-            center.z + libm::sinf(angle) * 15.0,
-        );
-        let item = LootItem::Materials {
-            wood: 100,
-            brick: 100,
-            metal: 100,
-        };
-        world.loot.spawn_drop(pos, item, false);
-        spawn_count += 1;
-    }
-
     serial_println!("TEST: Spawned {} items around player", spawn_count);
 
     // Spawn bots for player to fight (so they can win by eliminating them)
-    world.spawn_bots(5);
-    serial_println!("TEST: Spawned 5 bots to fight - eliminate them to win!");
+    world.spawn_bots(2);
+    serial_println!("TEST: Spawned 2 bots to fight - eliminate them to win!");
 }
 
 /// Network worker for network core

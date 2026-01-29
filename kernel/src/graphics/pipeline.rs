@@ -41,6 +41,38 @@ pub fn transform_vertex(
     }
 }
 
+/// Transform a vertex using precomputed MVP matrix (FAST version)
+/// MVP = projection * view * model (precomputed once per mesh)
+#[inline]
+pub fn transform_vertex_fast(
+    vertex: &Vertex,
+    mvp: &Mat4,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Vertex {
+    // Single MVP transformation instead of 3 separate matrix multiplies
+    let clip_pos = *mvp * Vec4::new(vertex.position.x, vertex.position.y, vertex.position.z, 1.0);
+
+    // Perspective division
+    let w = clip_pos.w;
+    if w.abs() < 0.0001 {
+        return vertex.clone();
+    }
+
+    // Viewport transformation (NDC to screen coordinates)
+    let inv_w = 1.0 / w;
+    let screen_x = (clip_pos.x * inv_w + 1.0) * 0.5 * viewport_width;
+    let screen_y = (1.0 - clip_pos.y * inv_w) * 0.5 * viewport_height;
+    let screen_z = inv_w; // Use 1/w for depth
+
+    Vertex {
+        position: Vec3::new(screen_x, screen_y, screen_z),
+        normal: vertex.normal,
+        color: vertex.color,
+        uv: vertex.uv,
+    }
+}
+
 /// Transform a triangle and perform backface culling
 /// Returns None if the triangle should be culled
 pub fn transform_triangle(
@@ -139,6 +171,41 @@ pub fn transform_and_bin(
     let edge1 = tv1.position - tv0.position;
     let edge2 = tv2.position - tv0.position;
     let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+    if cross_z > 0.0 {
+        return None;
+    }
+
+    // Create ScreenTriangle with pre-computed edge coefficients
+    ScreenTriangle::from_vertices(&tv0, &tv1, &tv2, fb_width as i32, fb_height as i32)
+}
+
+/// FAST: Transform triangle using precomputed MVP matrix
+/// MVP = projection * view * model should be computed once per mesh
+#[inline]
+pub fn transform_and_bin_fast(
+    v0: &Vertex,
+    v1: &Vertex,
+    v2: &Vertex,
+    mvp: &Mat4,
+    fb_width: f32,
+    fb_height: f32,
+) -> Option<ScreenTriangle> {
+    // Transform all three vertices using single MVP matrix (3x faster!)
+    let tv0 = transform_vertex_fast(v0, mvp, fb_width, fb_height);
+    let tv1 = transform_vertex_fast(v1, mvp, fb_width, fb_height);
+    let tv2 = transform_vertex_fast(v2, mvp, fb_width, fb_height);
+
+    // Near plane clipping: reject if behind camera
+    if tv0.position.z < 0.0 || tv1.position.z < 0.0 || tv2.position.z < 0.0 {
+        return None;
+    }
+
+    // Backface culling using screen-space winding order
+    let edge1_x = tv1.position.x - tv0.position.x;
+    let edge1_y = tv1.position.y - tv0.position.y;
+    let edge2_x = tv2.position.x - tv0.position.x;
+    let edge2_y = tv2.position.y - tv0.position.y;
+    let cross_z = edge1_x * edge2_y - edge1_y * edge2_x;
     if cross_z > 0.0 {
         return None;
     }

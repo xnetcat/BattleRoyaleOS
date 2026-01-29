@@ -38,10 +38,25 @@ pub fn active_backend() -> GpuBackend {
 /// Attempts to initialize SVGA3D first, then VMSVGA, falls back to Limine framebuffer.
 /// Returns (width, height) on success.
 pub fn init() -> (usize, usize) {
-    // Try VMSVGA first (required for SVGA3D)
+    // ALWAYS initialize Limine framebuffer first to get the configured resolution
+    // This is the authoritative source for screen dimensions
+    let (limine_w, limine_h) = if let Some((w, h)) = framebuffer::init() {
+        (w, h)
+    } else {
+        serial_println!("GPU: ERROR - No Limine framebuffer available!");
+        return (640, 480);
+    };
+
+    // Try VMSVGA with Limine's resolution
     if vmsvga::is_available() {
         serial_println!("GPU: VMSVGA device detected, attempting initialization...");
-        if let Some((w, h)) = vmsvga::init() {
+        // Pass Limine's resolution to VMSVGA so they match!
+        if let Some((w, h)) = vmsvga::init_with_resolution(limine_w as u32, limine_h as u32) {
+            // Verify resolution matches
+            if w != limine_w || h != limine_h {
+                serial_println!("GPU: WARNING - VMSVGA resolution {}x{} differs from Limine {}x{}", w, h, limine_w, limine_h);
+            }
+
             // VMSVGA 2D is now active, try to enable SVGA3D
             if vmsvga::is_3d_available() {
                 // Try to initialize GPU3D rendering
@@ -57,10 +72,7 @@ pub fn init() -> (usize, usize) {
                 serial_println!("GPU: SVGA3D not available, using VMSVGA 2D backend {}x{}", w, h);
             }
 
-            // Also initialize the software framebuffer as it's used by the existing codebase
-            // We'll sync the dimensions
-            init_software_framebuffer_compat(w, h);
-
+            // Framebuffer already initialized above
             return (w, h);
         }
         serial_println!("GPU: VMSVGA initialization failed, falling back to software");
@@ -68,18 +80,11 @@ pub fn init() -> (usize, usize) {
         serial_println!("GPU: VMSVGA device not available");
     }
 
-    // Fall back to Limine framebuffer
+    // Fall back to Limine framebuffer (already initialized)
     serial_println!("GPU: Using software rendering (Limine framebuffer)");
     *ACTIVE_BACKEND.lock() = GpuBackend::Software;
-
-    if let Some((w, h)) = framebuffer::init() {
-        serial_println!("GPU: Software framebuffer {}x{}", w, h);
-        (w, h)
-    } else {
-        serial_println!("GPU: ERROR - No framebuffer available!");
-        // Return a minimal resolution as fallback
-        (640, 480)
-    }
+    serial_println!("GPU: Software framebuffer {}x{}", limine_w, limine_h);
+    (limine_w, limine_h)
 }
 
 /// Initialize a compatibility software framebuffer for VMSVGA mode

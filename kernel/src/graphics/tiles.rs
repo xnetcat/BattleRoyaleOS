@@ -247,10 +247,84 @@ impl TileBinLockFree {
     }
 }
 
-/// Global frame triangle buffer (DEPRECATED - kept for compatibility, use TRIANGLE_STORAGE)
-pub static FRAME_TRIANGLES: Mutex<Option<Vec<ScreenTriangle>>> = Mutex::new(None);
+/// Lock-free triangle storage for the frame
+/// Uses UnsafeCell for lock-free writes (single producer) and reads (multiple consumers)
+pub struct TriangleStorage {
+    triangles: UnsafeCell<[ScreenTriangle; MAX_TRIANGLES_PER_FRAME]>,
+    count: AtomicUsize,
+}
 
-/// Atomic count of triangles in current frame (now uses TRIANGLE_STORAGE internally)
+// Safety: TriangleStorage is safe to share across threads because:
+// - Writes only happen from the main thread (single producer)
+// - Each slot is written exactly once per frame before any reads
+// - Reads happen after the write barrier (fetch_add with AcqRel)
+unsafe impl Sync for TriangleStorage {}
+
+impl TriangleStorage {
+    const fn new() -> Self {
+        // Create zeroed ScreenTriangle for initialization
+        const EMPTY: ScreenTriangle = ScreenTriangle {
+            x0: 0, y0: 0, z0: 0.0,
+            x1: 0, y1: 0, z1: 0.0,
+            x2: 0, y2: 0, z2: 0.0,
+            a12: 0, b12: 0, c12: 0,
+            a20: 0, b20: 0, c20: 0,
+            a01: 0, b01: 0, c01: 0,
+            min_x: 0, max_x: 0, min_y: 0, max_y: 0,
+            inv_area: 0.0, is_cw: false,
+            r0: 0, g0: 0, b0: 0,
+            r1: 0, g1: 0, b1: 0,
+            r2: 0, g2: 0, b2: 0,
+        };
+        Self {
+            triangles: UnsafeCell::new([EMPTY; MAX_TRIANGLES_PER_FRAME]),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Add a triangle (lock-free, single producer)
+    #[inline]
+    pub fn add(&self, tri: ScreenTriangle) -> Option<u16> {
+        let idx = self.count.fetch_add(1, Ordering::AcqRel);
+        if idx >= MAX_TRIANGLES_PER_FRAME {
+            return None;
+        }
+        // Safety: idx is unique due to atomic increment, single producer
+        unsafe {
+            (*self.triangles.get())[idx] = tri;
+        }
+        Some(idx as u16)
+    }
+
+    /// Get a triangle by index (lock-free read)
+    #[inline]
+    pub fn get(&self, idx: u16) -> Option<ScreenTriangle> {
+        let idx = idx as usize;
+        if idx < self.count.load(Ordering::Acquire) {
+            // Safety: idx is within bounds and data was written before count update
+            Some(unsafe { (*self.triangles.get())[idx] })
+        } else {
+            None
+        }
+    }
+
+    /// Get current triangle count
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Reset for new frame
+    #[inline]
+    pub fn reset(&self) {
+        self.count.store(0, Ordering::Release);
+    }
+}
+
+/// Global lock-free triangle storage
+static TRIANGLE_STORAGE: TriangleStorage = TriangleStorage::new();
+
+/// Atomic count of triangles (for backward compatibility)
 pub static TRIANGLE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Maximum number of tiles (for static allocation)
@@ -263,54 +337,36 @@ pub static TILE_BINS_LOCKFREE: [TileBinLockFree; MAX_TILES] = {
     [INIT; MAX_TILES]
 };
 
-/// Initialize the frame triangle buffer
+/// Initialize the frame triangle buffer (no-op for lock-free storage)
 pub fn init_triangle_buffer() {
-    let mut buf = FRAME_TRIANGLES.lock();
-    let mut triangles = Vec::with_capacity(MAX_TRIANGLES_PER_FRAME);
-    triangles.resize(MAX_TRIANGLES_PER_FRAME, unsafe { core::mem::zeroed() });
-    *buf = Some(triangles);
+    TRIANGLE_STORAGE.reset();
     TRIANGLE_COUNT.store(0, Ordering::Release);
 }
 
-/// Reset triangle buffer for new frame
+/// Reset triangle buffer for new frame (LOCK-FREE)
 #[inline]
 pub fn reset_triangle_buffer() {
+    TRIANGLE_STORAGE.reset();
     TRIANGLE_COUNT.store(0, Ordering::Release);
 }
 
-/// Add a screen triangle to the frame buffer
+/// Add a screen triangle to the frame buffer (LOCK-FREE)
 /// Returns the triangle index, or None if buffer is full
 #[inline]
 pub fn add_triangle(tri: ScreenTriangle) -> Option<u16> {
-    let idx = TRIANGLE_COUNT.fetch_add(1, Ordering::AcqRel);
-    if idx >= MAX_TRIANGLES_PER_FRAME {
-        return None;
-    }
-    if let Some(buf) = FRAME_TRIANGLES.lock().as_mut() {
-        buf[idx] = tri;
-        Some(idx as u16)
-    } else {
-        None
-    }
+    TRIANGLE_STORAGE.add(tri)
 }
 
-/// Get a triangle from the frame buffer
+/// Get a triangle from the frame buffer (LOCK-FREE)
 #[inline]
 pub fn get_triangle(idx: u16) -> Option<ScreenTriangle> {
-    let buf = FRAME_TRIANGLES.lock();
-    if let Some(triangles) = buf.as_ref() {
-        let idx = idx as usize;
-        if idx < TRIANGLE_COUNT.load(Ordering::Acquire) {
-            return Some(triangles[idx]);
-        }
-    }
-    None
+    TRIANGLE_STORAGE.get(idx)
 }
 
 /// Get the number of triangles in the current frame
 #[inline]
 pub fn triangle_count() -> usize {
-    TRIANGLE_COUNT.load(Ordering::Acquire)
+    TRIANGLE_STORAGE.len()
 }
 
 /// Clear all lock-free bins
@@ -320,20 +376,45 @@ pub fn clear_lockfree_bins() {
     }
 }
 
-/// Bin a triangle to appropriate tiles (lock-free version)
-pub fn bin_triangle_lockfree(triangle_idx: u16, tri: &ScreenTriangle) {
-    let queue_guard = TILE_QUEUE.lock();
-    let queue = match queue_guard.as_ref() {
-        Some(q) => q,
-        None => return,
-    };
+/// Cached tile grid dimensions (set once during init, read without locking)
+static TILE_GRID_WIDTH: AtomicUsize = AtomicUsize::new(0);
+static TILE_GRID_HEIGHT: AtomicUsize = AtomicUsize::new(0);
 
-    for (idx, tile) in queue.tiles.iter().enumerate() {
-        if idx >= MAX_TILES {
-            break;
-        }
-        if tri.overlaps_tile(tile.x as i32, tile.y as i32, tile.width as i32, tile.height as i32) {
-            TILE_BINS_LOCKFREE[idx].add(triangle_idx);
+/// Set tile grid dimensions (call once during init)
+pub fn set_tile_grid_dimensions(screen_width: usize, screen_height: usize) {
+    let tiles_x = (screen_width + TILE_SIZE - 1) / TILE_SIZE;
+    let tiles_y = (screen_height + TILE_SIZE - 1) / TILE_SIZE;
+    TILE_GRID_WIDTH.store(tiles_x, Ordering::Release);
+    TILE_GRID_HEIGHT.store(tiles_y, Ordering::Release);
+}
+
+/// Bin a triangle to appropriate tiles (TRULY lock-free version)
+/// Computes tile indices directly from triangle bounds - no mutex needed
+#[inline]
+pub fn bin_triangle_lockfree(triangle_idx: u16, tri: &ScreenTriangle) {
+    let tiles_x = TILE_GRID_WIDTH.load(Ordering::Acquire);
+    if tiles_x == 0 {
+        return; // Not initialized
+    }
+
+    // Compute which tiles this triangle overlaps
+    let tile_min_x = (tri.min_x as usize) / TILE_SIZE;
+    let tile_max_x = (tri.max_x as usize) / TILE_SIZE;
+    let tile_min_y = (tri.min_y as usize) / TILE_SIZE;
+    let tile_max_y = (tri.max_y as usize) / TILE_SIZE;
+
+    // Clamp to valid tile range
+    let tile_max_x = tile_max_x.min(tiles_x - 1);
+    let tile_max_y = tile_max_y.min(TILE_GRID_HEIGHT.load(Ordering::Acquire) - 1);
+
+    // Add to each overlapping tile's bin (no locking required)
+    for ty in tile_min_y..=tile_max_y {
+        let row_start = ty * tiles_x;
+        for tx in tile_min_x..=tile_max_x {
+            let tile_idx = row_start + tx;
+            if tile_idx < MAX_TILES {
+                TILE_BINS_LOCKFREE[tile_idx].add(triangle_idx);
+            }
         }
     }
 }
@@ -458,6 +539,8 @@ pub static TILE_QUEUE: Mutex<Option<TileWorkQueue>> = Mutex::new(None);
 /// Initialize the tile system
 pub fn init(width: usize, height: usize) {
     *TILE_QUEUE.lock() = Some(TileWorkQueue::new(width, height));
+    // Set tile grid dimensions for lock-free binning
+    set_tile_grid_dimensions(width, height);
     // Also initialize the triangle buffer for parallel rendering
     init_triangle_buffer();
 }

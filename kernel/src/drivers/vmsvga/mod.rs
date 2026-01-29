@@ -250,9 +250,9 @@ fn find_device() -> Option<PciDevice> {
     pci::find_device(VMWARE_VENDOR_ID, VMSVGA_DEVICE_ID)
 }
 
-/// Initialize the VMSVGA driver
+/// Initialize the VMSVGA driver with specified resolution
 /// Returns (width, height) on success
-pub fn init() -> Option<(usize, usize)> {
+pub fn init_with_resolution(target_width: u32, target_height: u32) -> Option<(usize, usize)> {
     // Find PCI device
     let pci_dev = match find_device() {
         Some(dev) => dev,
@@ -292,18 +292,13 @@ pub fn init() -> Option<(usize, usize)> {
     let fifo_phys = regs::read_reg(io_base, SvgaReg::MemStart) as u64;
     let fifo_size = regs::read_reg(io_base, SvgaReg::MemSize) as usize;
 
-    // Get maximum resolution
+    // Verify the target resolution is within device limits
     let max_width = regs::read_reg(io_base, SvgaReg::MaxWidth);
     let max_height = regs::read_reg(io_base, SvgaReg::MaxHeight);
 
-    // Choose a target resolution (prefer 1024x768, fall back to lower)
-    let (target_width, target_height) = if max_width >= 1024 && max_height >= 768 {
-        (1024, 768)
-    } else if max_width >= 800 && max_height >= 600 {
-        (800, 600)
-    } else {
-        (640, 480)
-    };
+    // Use the provided resolution (matching Limine framebuffer)
+    let target_width = target_width.min(max_width);
+    let target_height = target_height.min(max_height);
 
     // Map framebuffer into kernel address space
     let fb_virt = match paging::map_mmio(fb_phys, fb_size) {

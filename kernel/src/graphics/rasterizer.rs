@@ -28,9 +28,6 @@ const FP_HALF: i32 = FP_ONE >> 1;
 const COLOR_BITS: i32 = 16;
 const COLOR_ONE: i32 = 1 << COLOR_BITS;
 
-/// Z-buffer fixed-point: 24 bits for depth precision
-const Z_BITS: i32 = 24;
-const Z_SCALE: f32 = (1 << Z_BITS) as f32;
 
 /// Convert float to fixed-point (4-bit)
 #[inline(always)]
@@ -698,12 +695,11 @@ pub fn rasterize_screen_triangle_simd4(
     let fp_one_i64 = FP_ONE as i64;
     let area_i64 = (1.0 / tri.inv_area) as i64;
 
-    let dz_dx_f = (tri.z0 * tri.a12 as f32 + tri.z1 * tri.a20 as f32 + tri.z2 * tri.a01 as f32)
+    // Z gradients as floats (direct f32 comparison with z-buffer - no conversion overhead)
+    let dz_dx = (tri.z0 * tri.a12 as f32 + tri.z1 * tri.a20 as f32 + tri.z2 * tri.a01 as f32)
         * tri.inv_area * FP_ONE as f32;
-    let dz_dy_f = (tri.z0 * tri.b12 as f32 + tri.z1 * tri.b20 as f32 + tri.z2 * tri.b01 as f32)
+    let dz_dy = (tri.z0 * tri.b12 as f32 + tri.z1 * tri.b20 as f32 + tri.z2 * tri.b01 as f32)
         * tri.inv_area * FP_ONE as f32;
-    let dz_dx = (dz_dx_f * Z_SCALE) as i64;
-    let dz_dy = (dz_dy_f * Z_SCALE) as i64;
 
     let dr_dx = ((tri.r0 * tri.a12 as i64 + tri.r1 * tri.a20 as i64 + tri.r2 * tri.a01 as i64) * fp_one_i64) / area_i64;
     let dr_dy = ((tri.r0 * tri.b12 as i64 + tri.r1 * tri.b20 as i64 + tri.r2 * tri.b01 as i64) * fp_one_i64) / area_i64;
@@ -737,10 +733,11 @@ pub fn rasterize_screen_triangle_simd4(
     let w1_step_y_vec = Simd4i64::splat(w1_step_y);
     let w2_step_y_vec = Simd4i64::splat(w2_step_y);
 
+    // Initial z value as float (matching z-buffer format)
     let b0_s = w0_base as f32 * tri.inv_area;
     let b1_s = w1_base as f32 * tri.inv_area;
     let b2_s = w2_base as f32 * tri.inv_area;
-    let z_row_init = ((b0_s * tri.z0 + b1_s * tri.z1 + b2_s * tri.z2) * Z_SCALE) as i64;
+    let z_row_init = b0_s * tri.z0 + b1_s * tri.z1 + b2_s * tri.z2;
     let r_row_init = (w0_base * tri.r0 + w1_base * tri.r1 + w2_base * tri.r2) / area_i64;
     let g_row_init = (w0_base * tri.g0 + w1_base * tri.g1 + w2_base * tri.g2) / area_i64;
     let b_row_init = (w0_base * tri.b0 + w1_base * tri.b1 + w2_base * tri.b2) / area_i64;
@@ -753,7 +750,7 @@ pub fn rasterize_screen_triangle_simd4(
     let mut g_row = g_row_init;
     let mut b_row = b_row_init;
 
-    let dz_dx4 = dz_dx * 4;
+    let dz_dx4 = dz_dx * 4.0;
     let dr_dx4 = dr_dx * 4;
     let dg_dx4 = dg_dx * 4;
     let db_dx4 = db_dx * 4;
@@ -762,7 +759,8 @@ pub fn rasterize_screen_triangle_simd4(
         let mut w0 = w0_row.v;
         let mut w1 = w1_row.v;
         let mut w2 = w2_row.v;
-        let mut z = [z_row, z_row + dz_dx, z_row + dz_dx * 2, z_row + dz_dx * 3];
+        // Z as float array for direct comparison
+        let mut z = [z_row, z_row + dz_dx, z_row + dz_dx * 2.0, z_row + dz_dx * 3.0];
         let mut r = [r_row, r_row + dr_dx, r_row + dr_dx * 2, r_row + dr_dx * 3];
         let mut g = [g_row, g_row + dg_dx, g_row + dg_dx * 2, g_row + dg_dx * 3];
         let mut bc = [b_row, b_row + db_dx, b_row + db_dx * 2, b_row + db_dx * 3];
@@ -781,9 +779,9 @@ pub fn rasterize_screen_triangle_simd4(
 
                 if px >= min_x && px <= max_x && m0 >= 0 {
                     unsafe {
-                        let cz = (*ctx.zb_ptr.add(zb_base) * Z_SCALE) as i64;
+                        let cz = *ctx.zb_ptr.add(zb_base);
                         if z[0] > cz {
-                            *ctx.zb_ptr.add(zb_base) = z[0] as f32 / Z_SCALE;
+                            *ctx.zb_ptr.add(zb_base) = z[0];
                             *ctx.fb_ptr.add(fb_base) = rgb(
                                 ((r[0] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
                                 ((g[0] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
@@ -796,9 +794,9 @@ pub fn rasterize_screen_triangle_simd4(
                     unsafe {
                         let zb_idx = zb_base + 1;
                         let fb_idx = fb_base + 1;
-                        let cz = (*ctx.zb_ptr.add(zb_idx) * Z_SCALE) as i64;
+                        let cz = *ctx.zb_ptr.add(zb_idx);
                         if z[1] > cz {
-                            *ctx.zb_ptr.add(zb_idx) = z[1] as f32 / Z_SCALE;
+                            *ctx.zb_ptr.add(zb_idx) = z[1];
                             *ctx.fb_ptr.add(fb_idx) = rgb(
                                 ((r[1] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
                                 ((g[1] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
@@ -811,9 +809,9 @@ pub fn rasterize_screen_triangle_simd4(
                     unsafe {
                         let zb_idx = zb_base + 2;
                         let fb_idx = fb_base + 2;
-                        let cz = (*ctx.zb_ptr.add(zb_idx) * Z_SCALE) as i64;
+                        let cz = *ctx.zb_ptr.add(zb_idx);
                         if z[2] > cz {
-                            *ctx.zb_ptr.add(zb_idx) = z[2] as f32 / Z_SCALE;
+                            *ctx.zb_ptr.add(zb_idx) = z[2];
                             *ctx.fb_ptr.add(fb_idx) = rgb(
                                 ((r[2] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
                                 ((g[2] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
@@ -826,9 +824,9 @@ pub fn rasterize_screen_triangle_simd4(
                     unsafe {
                         let zb_idx = zb_base + 3;
                         let fb_idx = fb_base + 3;
-                        let cz = (*ctx.zb_ptr.add(zb_idx) * Z_SCALE) as i64;
+                        let cz = *ctx.zb_ptr.add(zb_idx);
                         if z[3] > cz {
-                            *ctx.zb_ptr.add(zb_idx) = z[3] as f32 / Z_SCALE;
+                            *ctx.zb_ptr.add(zb_idx) = z[3];
                             *ctx.fb_ptr.add(fb_idx) = rgb(
                                 ((r[3] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
                                 ((g[3] >> COLOR_BITS) as i32).clamp(0, 255) as u8,
@@ -845,8 +843,8 @@ pub fn rasterize_screen_triangle_simd4(
             w1[2] = w1[2].wrapping_add(w1_step_x4); w1[3] = w1[3].wrapping_add(w1_step_x4);
             w2[0] = w2[0].wrapping_add(w2_step_x4); w2[1] = w2[1].wrapping_add(w2_step_x4);
             w2[2] = w2[2].wrapping_add(w2_step_x4); w2[3] = w2[3].wrapping_add(w2_step_x4);
-            z[0] = z[0].wrapping_add(dz_dx4); z[1] = z[1].wrapping_add(dz_dx4);
-            z[2] = z[2].wrapping_add(dz_dx4); z[3] = z[3].wrapping_add(dz_dx4);
+            z[0] += dz_dx4; z[1] += dz_dx4;
+            z[2] += dz_dx4; z[3] += dz_dx4;
             r[0] = r[0].wrapping_add(dr_dx4); r[1] = r[1].wrapping_add(dr_dx4);
             r[2] = r[2].wrapping_add(dr_dx4); r[3] = r[3].wrapping_add(dr_dx4);
             g[0] = g[0].wrapping_add(dg_dx4); g[1] = g[1].wrapping_add(dg_dx4);
@@ -859,7 +857,7 @@ pub fn rasterize_screen_triangle_simd4(
         w0_row = w0_row.add(&w0_step_y_vec);
         w1_row = w1_row.add(&w1_step_y_vec);
         w2_row = w2_row.add(&w2_step_y_vec);
-        z_row = z_row.wrapping_add(dz_dy);
+        z_row += dz_dy;
         r_row = r_row.wrapping_add(dr_dy);
         g_row = g_row.wrapping_add(dg_dy);
         b_row = b_row.wrapping_add(db_dy);
