@@ -82,6 +82,12 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
     let house_mesh = renderer::map_mesh::create_house_mesh_simple(Vec3::new(0.7, 0.6, 0.5));
     let storm_wall_mesh = mesh::create_storm_wall(24, 200.0); // 24 segments for performance
 
+    // LOD meshes for distant objects (much fewer triangles)
+    let tree_pine_lod = renderer::voxel_models::create_pine_tree_lod().to_mesh(0.5);
+    let tree_oak_lod = renderer::voxel_models::create_oak_tree_lod().to_mesh(0.5);
+    let rock_lod = renderer::voxel_models::create_rock_lod().to_mesh(0.4);
+    let chest_lod = renderer::voxel_models::create_chest_lod().to_mesh(0.15);
+
     // Weapon meshes from detailed voxel models
     let shotgun_mesh = renderer::voxel_models::create_shotgun_model().to_mesh(0.08);
     let ar_mesh = renderer::voxel_models::create_ar_model().to_mesh(0.08);
@@ -346,6 +352,10 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
                     &chest_mesh,
                     &house_mesh,
                     &storm_wall_mesh,
+                    &tree_pine_lod,
+                    &tree_oak_lod,
+                    &rock_lod,
+                    &chest_lod,
                     &projection,
                     rotation,
                     &frame_timer,
@@ -478,6 +488,11 @@ fn handle_gameplay(
     chest_mesh: &mesh::Mesh,
     house_mesh: &mesh::Mesh,
     storm_wall_mesh: &mesh::Mesh,
+    // LOD meshes for distant objects
+    tree_pine_lod: &mesh::Mesh,
+    tree_oak_lod: &mesh::Mesh,
+    rock_lod: &mesh::Mesh,
+    chest_lod: &mesh::Mesh,
     projection: &Mat4,
     rotation: f32,
     frame_timer: &FrameTimer,
@@ -592,6 +607,7 @@ fn handle_gameplay(
         terrain, player_mesh, wall_mesh, bus_mesh,
         glider_mesh, tree_pine_mesh, tree_oak_mesh, rock_mesh,
         chest_mesh, house_mesh, storm_wall_mesh,
+        tree_pine_lod, tree_oak_lod, rock_lod, chest_lod,
         projection, *local_player_id, rotation,
         frame_timer.fps(),
     );

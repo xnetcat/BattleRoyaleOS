@@ -860,3 +860,76 @@ pub fn create_chest() -> VoxelModel {
 
     model
 }
+
+// =============================================================================
+// LOD (Level of Detail) Models - Simplified versions for distant rendering
+// =============================================================================
+
+/// Create a simplified pine tree for distant rendering
+/// Size: 4x10x4 voxels (instead of 10x20x10)
+/// Triangle count: ~120 (instead of ~912)
+pub fn create_pine_tree_lod() -> VoxelModel {
+    let mut model = VoxelModel::with_origin(4, 10, 4, Vec3::new(2.0, 0.0, 2.0));
+
+    let trunk = palette::WOOD_DARK;
+    let leaves = palette::LEAF_GREEN;
+
+    // Simplified trunk (just 2 voxels tall)
+    model.fill_box(1, 0, 1, 2, 3, 2, trunk);
+
+    // Simplified cone foliage (3 layers)
+    model.fill_box(0, 3, 0, 3, 5, 3, leaves);
+    model.fill_box(0, 6, 0, 3, 7, 3, leaves);
+    model.fill_box(1, 8, 1, 2, 9, 2, leaves);
+
+    model
+}
+
+/// Create a simplified oak tree for distant rendering
+/// Size: 5x8x5 voxels (instead of 12x16x12)
+/// Triangle count: ~100 (instead of ~912)
+pub fn create_oak_tree_lod() -> VoxelModel {
+    let mut model = VoxelModel::with_origin(5, 8, 5, Vec3::new(2.5, 0.0, 2.5));
+
+    let trunk = palette::WOOD_DARK;
+    let leaves = palette::LEAF_GREEN;
+
+    // Simple trunk
+    model.fill_box(2, 0, 2, 2, 3, 2, trunk);
+
+    // Simple round foliage blob
+    model.fill_box(0, 4, 0, 4, 7, 4, leaves);
+
+    model
+}
+
+/// Create a simplified rock for distant rendering
+/// Size: 3x2x3 voxels (instead of 6x4x5)
+/// Triangle count: ~36 (instead of ~296)
+pub fn create_rock_lod() -> VoxelModel {
+    let mut model = VoxelModel::with_origin(3, 2, 3, Vec3::new(1.5, 0.0, 1.5));
+
+    let gray = palette::STONE_GRAY;
+
+    // Just a simple block
+    model.fill_box(0, 0, 0, 2, 1, 2, gray);
+
+    model
+}
+
+/// Create a simplified chest for distant rendering
+/// Size: 3x3x2 voxels (instead of 6x5x4)
+/// Triangle count: ~24 (instead of ~296)
+pub fn create_chest_lod() -> VoxelModel {
+    let mut model = VoxelModel::with_origin(3, 3, 2, Vec3::new(1.5, 0.0, 1.0));
+
+    let wood = palette::WOOD_MEDIUM;
+    let gold = VoxelColor::from_hex(0xFFD700);
+
+    // Simple box shape
+    model.fill_box(0, 0, 0, 2, 2, 1, wood);
+    // Gold lock visible from distance
+    model.set_color(1, 1, 0, gold);
+
+    model
+}

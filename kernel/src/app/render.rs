@@ -313,6 +313,11 @@ pub fn render_game_frame(
     chest_mesh: &Mesh,
     house_mesh: &Mesh,
     storm_wall_mesh: &Mesh,
+    // LOD meshes for distant objects
+    tree_pine_lod: &Mesh,
+    tree_oak_lod: &Mesh,
+    rock_lod: &Mesh,
+    chest_lod: &Mesh,
     projection: &Mat4,
     local_player_id: Option<u8>,
     rotation: f32,
@@ -386,12 +391,13 @@ pub fn render_game_frame(
         );
         drop(render_ctx);
     } else {
-        // === SOFTWARE RENDERING PATH ===
+        // === SOFTWARE RENDERING PATH (uses LOD meshes) ===
         render_game_software(
             fb_width, fb_height,
             terrain, player_mesh, wall_mesh, bus_mesh,
             glider_mesh, tree_pine_mesh, tree_oak_mesh, rock_mesh,
             chest_mesh, house_mesh, storm_wall_mesh,
+            tree_pine_lod, tree_oak_lod, rock_lod, chest_lod,
             &view, projection, camera_pos, rotation,
         );
         drop(render_ctx);
@@ -610,6 +616,11 @@ fn render_game_software(
     chest_mesh: &Mesh,
     house_mesh: &Mesh,
     storm_wall_mesh: &Mesh,
+    // LOD meshes for distant objects
+    tree_pine_lod: &Mesh,
+    tree_oak_lod: &Mesh,
+    rock_lod: &Mesh,
+    chest_lod: &Mesh,
     view: &Mat4,
     projection: &Mat4,
     camera_pos: Vec3,
@@ -620,8 +631,9 @@ fn render_game_software(
     tiles::reset_triangle_buffer();
 
     // 2. Create culling context for frustum + distance culling
+    // AGGRESSIVE culling for software rendering performance
     let cull_ctx = CullContext::new(view, projection, camera_pos)
-        .with_distances(0.5, 500.0); // Near 0.5, Far 300 units
+        .with_distances(0.5, 80.0); // Near 0.5, Far 80 units (was 500!)
 
     // 3. Transform and bin terrain (always render, but reduced complexity)
     let terrain_model = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0));
@@ -651,10 +663,34 @@ fn render_game_software(
                 }
             }
 
-            // Render vegetation with frustum + distance culling
+            // Render vegetation with AGGRESSIVE distance culling and LOD for software rendering
+            // Max render distances - Trees: 40m, Rocks: 30m, Bushes: 20m
+            // LOD threshold - use simplified meshes beyond 8m (very aggressive for performance)
+            const TREE_RENDER_DIST: f32 = 40.0;
+            const ROCK_RENDER_DIST: f32 = 30.0;
+            const BUSH_RENDER_DIST: f32 = 20.0;
+            const LOD_THRESHOLD_SQ: f32 = 8.0 * 8.0; // Use LOD beyond 8 meters (aggressive!)
+
             for i in 0..w.map.vegetation_count {
                 if let Some(veg) = &w.map.vegetation[i] {
-                    // Combined frustum + distance culling (100m for vegetation)
+                    // Quick distance check FIRST (faster than frustum test)
+                    let dx = veg.position.x - camera_pos.x;
+                    let dz = veg.position.z - camera_pos.z;
+                    let dist_sq = dx * dx + dz * dz;
+
+                    let max_dist = match veg.veg_type {
+                        crate::game::map::VegetationType::TreePine |
+                        crate::game::map::VegetationType::TreeOak |
+                        crate::game::map::VegetationType::TreeBirch => TREE_RENDER_DIST,
+                        crate::game::map::VegetationType::Rock => ROCK_RENDER_DIST,
+                        crate::game::map::VegetationType::Bush => BUSH_RENDER_DIST,
+                    };
+
+                    if dist_sq > max_dist * max_dist {
+                        continue;
+                    }
+
+                    // Frustum culling for objects within distance
                     if !cull_ctx.should_render(veg.position, 5.0 * veg.scale) {
                         continue;
                     }
@@ -662,32 +698,49 @@ fn render_game_software(
                     let model = Mat4::from_translation(veg.position)
                         * Mat4::from_scale(Vec3::splat(veg.scale));
 
+                    // Select mesh based on distance - LOD for distant objects
+                    let use_lod = dist_sq > LOD_THRESHOLD_SQ;
+
                     match veg.veg_type {
                         crate::game::map::VegetationType::TreePine => {
-                            bin_mesh(tree_pine_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
+                            let mesh = if use_lod { tree_pine_lod } else { tree_pine_mesh };
+                            bin_mesh(mesh, &model, view, projection, fb_width as f32, fb_height as f32);
                         }
                         crate::game::map::VegetationType::TreeOak | crate::game::map::VegetationType::TreeBirch => {
-                            bin_mesh(tree_oak_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
+                            let mesh = if use_lod { tree_oak_lod } else { tree_oak_mesh };
+                            bin_mesh(mesh, &model, view, projection, fb_width as f32, fb_height as f32);
                         }
                         crate::game::map::VegetationType::Rock => {
-                            bin_mesh(rock_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
+                            let mesh = if use_lod { rock_lod } else { rock_mesh };
+                            bin_mesh(mesh, &model, view, projection, fb_width as f32, fb_height as f32);
                         }
                         crate::game::map::VegetationType::Bush => {
+                            // Bushes use oak tree LOD for simplicity
+                            let mesh = if use_lod { tree_oak_lod } else { tree_oak_mesh };
                             let bush_model = model * Mat4::from_scale(Vec3::splat(0.5));
-                            bin_mesh(tree_oak_mesh, &bush_model, view, projection, fb_width as f32, fb_height as f32);
+                            bin_mesh(mesh, &bush_model, view, projection, fb_width as f32, fb_height as f32);
                         }
                     }
                 }
             }
 
-            // Render loot drops with culling
+            // Render loot drops with distance culling and LOD (25m max)
+            const LOOT_RENDER_DIST: f32 = 25.0;
+            const LOOT_LOD_THRESHOLD_SQ: f32 = 6.0 * 6.0; // LOD beyond 6m for loot (aggressive!)
             for drop in w.loot.get_active_drops() {
+                let dx = drop.position.x - camera_pos.x;
+                let dz = drop.position.z - camera_pos.z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq > LOOT_RENDER_DIST * LOOT_RENDER_DIST {
+                    continue;
+                }
                 if !cull_ctx.should_render(drop.position, 2.0) {
                     continue;
                 }
                 let model = Mat4::from_translation(drop.position)
                     * Mat4::from_rotation_y(rotation * 2.0);
-                bin_mesh(chest_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
+                let mesh = if dist_sq > LOOT_LOD_THRESHOLD_SQ { chest_lod } else { chest_mesh };
+                bin_mesh(mesh, &model, view, projection, fb_width as f32, fb_height as f32);
             }
 
             // Render all players (always render, they're important)
