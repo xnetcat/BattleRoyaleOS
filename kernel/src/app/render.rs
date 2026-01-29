@@ -565,13 +565,13 @@ fn render_game_gpu(
 
                 // Player model faces -Z naturally, add PI to face forward (away from camera)
                 let model = Mat4::from_translation(player.position)
-                    * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
+                    * Mat4::from_rotation_y(player.yaw);
                 bin_mesh_gpu(player_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
 
                 if player.phase == PlayerPhase::Gliding {
                     let glider_offset = Vec3::new(0.0, 2.5, 0.0);
                     let glider_model = Mat4::from_translation(player.position + glider_offset)
-                        * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
+                        * Mat4::from_rotation_y(player.yaw);
                     bin_mesh_gpu(glider_mesh, &glider_model, view, projection, fb_width as f32, fb_height as f32);
                 }
             }
@@ -747,13 +747,13 @@ fn render_game_software(
 
                 // Player model faces -Z naturally, add PI to face forward (away from camera)
                 let model = Mat4::from_translation(player.position)
-                    * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
+                    * Mat4::from_rotation_y(player.yaw);
                 bin_mesh(player_mesh, &model, view, projection, fb_width as f32, fb_height as f32);
 
                 if player.phase == PlayerPhase::Gliding {
                     let glider_offset = Vec3::new(0.0, 2.5, 0.0);
                     let glider_model = Mat4::from_translation(player.position + glider_offset)
-                        * Mat4::from_rotation_y(player.yaw + core::f32::consts::PI);
+                        * Mat4::from_rotation_y(player.yaw);
                     bin_mesh(glider_mesh, &glider_model, view, projection, fb_width as f32, fb_height as f32);
                 }
             }

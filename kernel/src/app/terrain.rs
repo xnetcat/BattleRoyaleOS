@@ -65,9 +65,9 @@ pub fn create_3d_terrain(size: f32, subdivisions: usize) -> Mesh {
             let bl = tl + row_size as u32;
             let br = bl + 1;
 
-            // Two triangles per quad
-            terrain_mesh.indices.extend([tl, bl, tr]);
-            terrain_mesh.indices.extend([tr, bl, br]);
+            // Two triangles per quad (CCW winding when viewed from above)
+            terrain_mesh.indices.extend([tl, tr, bl]);
+            terrain_mesh.indices.extend([tr, br, bl]);
         }
     }
 
@@ -112,3 +112,19 @@ fn recalculate_normals(mesh: &mut Mesh) {
 }
 
 extern crate alloc;
+
+/// Sample terrain height at a world position (x, z)
+/// This uses the same noise function as create_3d_terrain
+pub fn sample_terrain_height(x: f32, z: f32) -> f32 {
+    // Multi-octave noise (must match create_3d_terrain exactly!)
+    // Large hills
+    let h1 = libm::sinf(x * 0.01) * libm::cosf(z * 0.01) * 15.0;
+    // Medium bumps
+    let h2 = libm::sinf(x * 0.05) * libm::sinf(z * 0.05) * 5.0;
+    // Small details
+    let h3 = libm::sinf(x * 0.15 + z * 0.1) * 2.0;
+    // Add some valleys
+    let h4 = libm::cosf((x + z) * 0.02) * 8.0;
+
+    h1 + h2 + h3 + h4
+}

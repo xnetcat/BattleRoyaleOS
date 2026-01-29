@@ -97,11 +97,16 @@ pub fn transform_triangle(
     // NOTE: Far plane clipping removed - was incorrectly rejecting close objects
 
     // Backface culling using screen-space winding order
-    // In screen space with Y pointing down, front-facing triangles
-    // (CCW in world space) become CW in screen space, giving negative cross_z
+    // In screen space with Y pointing down (after viewport transform):
+    // - CCW triangles in world space become CW in screen space
+    // - CW screen-space triangles have NEGATIVE cross_z
+    // We cull back-facing triangles (positive cross_z in screen space)
     let edge1 = tv1.position - tv0.position;
     let edge2 = tv2.position - tv0.position;
     let cross_z = edge1.x * edge2.y - edge1.y * edge2.x;
+
+    // Cull back-facing triangles (CCW in screen space = positive cross_z)
+    // Keep front-facing triangles (CW in screen space = negative cross_z)
     if cross_z > 0.0 {
         return None;
     }

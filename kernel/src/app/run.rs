@@ -26,7 +26,7 @@ use super::render::{
     render_game_frame, render_lobby_frame, render_menu_frame, render_test_map_frame,
     set_gpu_batch_available, GPU_BATCH_AVAILABLE,
 };
-use super::terrain::create_3d_terrain;
+use super::terrain::{create_3d_terrain, sample_terrain_height};
 
 /// Global benchmark mode flag
 static BENCHMARK_MODE: AtomicBool = AtomicBool::new(false);
@@ -107,7 +107,7 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
     // Far plane increased to 3000.0 to see across the 2000x2000 map from bus height
     let aspect = fb_width as f32 / fb_height as f32;
     let fov_radians = core::f32::consts::PI / 3.0;
-    let projection = perspective(fov_radians, aspect, 0.1, 3000.0);
+    let projection = perspective(fov_radians, aspect, 0.5, 3000.0);
 
     serial_println!("Parallel rendering: 4 cores active");
 
@@ -170,7 +170,9 @@ pub fn run(fb_width: usize, fb_height: usize, gpu_batch_available: bool) -> ! {
                 // Set player to grounded (not on bus)
                 if let Some(p) = world.players.get_mut(0) {
                     p.phase = PlayerPhase::Grounded;
-                    p.position = Vec3::new(50.0, 5.0, 50.0);
+                    // Spawn above terrain at (50, 50)
+                    let terrain_y = sample_terrain_height(50.0, 50.0);
+                    p.position = Vec3::new(50.0, terrain_y + 1.0, 50.0);
 
                     // Test mode: give player all weapons
                     if test_mode {
@@ -533,7 +535,7 @@ fn handle_gameplay(
             player_id: id,
             sequence: *input_sequence,
             forward: if key_state.w { 1 } else if key_state.s { -1 } else { 0 },
-            strafe: if key_state.d { 1 } else if key_state.a { -1 } else { 0 },
+            strafe: if key_state.a { 1 } else if key_state.d { -1 } else { 0 },
             jump: key_state.space,
             crouch: key_state.ctrl,
             fire: mouse.left_button || key_state.shift,
@@ -640,18 +642,18 @@ fn spawn_test_items(world: &mut crate::game::world::GameWorld) {
         Rarity::Legendary,
     ];
 
-    let center = Vec3::new(50.0, 0.5, 50.0);
+    let center_x = 50.0;
+    let center_z = 50.0;
     let mut spawn_count = 0;
 
     // Spawn one weapon of each type (reduced for performance testing)
     for (i, weapon_type) in weapons.iter().enumerate() {
         let angle = i as f32 * 1.2;
         let radius = 8.0;
-        let pos = Vec3::new(
-            center.x + libm::cosf(angle) * radius,
-            0.5,
-            center.z + libm::sinf(angle) * radius,
-        );
+        let x = center_x + libm::cosf(angle) * radius;
+        let z = center_z + libm::sinf(angle) * radius;
+        let y = sample_terrain_height(x, z) + 0.5;
+        let pos = Vec3::new(x, y, z);
         let weapon = Weapon::new(*weapon_type, rarities[i % rarities.len()]);
         world.loot.spawn_drop(pos, LootItem::Weapon(weapon), false);
         spawn_count += 1;
@@ -660,11 +662,10 @@ fn spawn_test_items(world: &mut crate::game::world::GameWorld) {
     // Spawn just 3 chest loot piles
     for i in 0..3 {
         let angle = i as f32 * (core::f32::consts::TAU / 3.0);
-        let pos = Vec3::new(
-            center.x + libm::cosf(angle) * 15.0,
-            0.5,
-            center.z + libm::sinf(angle) * 15.0,
-        );
+        let x = center_x + libm::cosf(angle) * 15.0;
+        let z = center_z + libm::sinf(angle) * 15.0;
+        let y = sample_terrain_height(x, z) + 0.5;
+        let pos = Vec3::new(x, y, z);
         world.loot.spawn_chest_loot(pos, ChestTier::Rare);
         spawn_count += 3;
     }
@@ -672,11 +673,10 @@ fn spawn_test_items(world: &mut crate::game::world::GameWorld) {
     // Spawn 2 healing items
     for i in 0..2 {
         let angle = i as f32 * core::f32::consts::PI;
-        let pos = Vec3::new(
-            center.x + libm::cosf(angle) * 12.0,
-            0.5,
-            center.z + libm::sinf(angle) * 12.0,
-        );
+        let x = center_x + libm::cosf(angle) * 12.0;
+        let z = center_z + libm::sinf(angle) * 12.0;
+        let y = sample_terrain_height(x, z) + 0.5;
+        let pos = Vec3::new(x, y, z);
         let item = if i == 0 {
             LootItem::Health { amount: 100, use_time: 10.0, max_health: 100 }
         } else {

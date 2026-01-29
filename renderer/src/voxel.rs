@@ -358,7 +358,7 @@ impl VoxelModel {
             });
         }
 
-        // Add 2 triangles (6 indices)
+        // Add 2 triangles (6 indices) - CCW winding when viewed from outside
         mesh.indices.push(base_idx);
         mesh.indices.push(base_idx + 1);
         mesh.indices.push(base_idx + 2);
